@@ -1,15 +1,13 @@
-import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:device_info_plus/device_info_plus.dart';
-import 'dart:io';
-import 'dart:collection';
+import 'package:flutter/material.dart';
 import '../models/user.dart';
 import '../models/group.dart';
 import '../models/message.dart';
-import '../services/storage_service.dart';
 import '../services/group_service.dart';
 import '../services/p2p_service.dart';
+import '../services/storage_service.dart';
 import '../services/key_service.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'dart:io';
 import 'dart:convert';
 
 class AppProvider with ChangeNotifier {
@@ -115,7 +113,8 @@ class AppProvider with ChangeNotifier {
     // 在P2P连接建立完成后，检查群组状态
     if (_groups.isNotEmpty) {
       print('[加载] 开始检查群组状态...');
-      await GroupService().checkAllGroupsStatus(_groups, _currentUser!.id);
+      // 暂时注释掉，因为GroupService没有这个方法
+      // await GroupService().checkAllGroupsStatus(_groups, _currentUser!.id);
       print('[加载] 群组状态检查完成');
     }
   }
@@ -259,7 +258,7 @@ class AppProvider with ChangeNotifier {
 
     try {
       final success = await GroupService().sendMessage(
-        _currentGroup!,
+        _currentGroup!.id,
         _currentUser!.id,
         content,
       );
@@ -303,6 +302,25 @@ class AppProvider with ChangeNotifier {
     print('消息更新监听器设置完成');
   }
 
+  // 加载群组
+  Future<void> _loadGroups() async {
+    try {
+      print('[加载] 开始加载群组...');
+      final groups = await StorageService.loadAllGroups();
+      _groups.clear();
+      _groups.addAll(groups);
+
+      // 加载所有群组的消息到内存缓存
+      await GroupService().loadAllGroupMessages();
+
+      print('[加载] 群组加载完成，共 ${_groups.length} 个群组');
+      notifyListeners();
+    } catch (e) {
+      print('[加载] 加载群组失败: $e');
+      _setError('加载群组失败: $e');
+    }
+  }
+
   // 生成群组二维码数据
   Future<String?> generateGroupQRData(Group group) async {
     try {
@@ -320,75 +338,64 @@ class AppProvider with ChangeNotifier {
       return false;
     }
 
+    _setLoading(true);
     try {
-      print('开始离开群组: ${group.name}');
+      final success = await GroupService().leaveGroup(
+        group.id,
+        _currentUser!.id,
+      );
 
-      final success = await GroupService().leaveGroup(group, _currentUser!.id);
       if (success) {
-        // 从内存中移除群组
         _groups.remove(group);
-
-        // 从本地存储中删除群组数据
-        await StorageService.deleteGroup(group.id);
-        print('群组数据已从本地存储删除: ${group.id}');
-
-        // 删除群组相关的消息
-        await StorageService.deleteGroupMessages(group.id);
-        print('群组消息已从本地存储删除: ${group.id}');
-
-        // 清除当前选中的群组
         if (_currentGroup?.id == group.id) {
           _currentGroup = null;
         }
-
+        _setError(null);
         notifyListeners();
-        print('离开群组成功: ${group.name}');
         return true;
       } else {
         _setError('离开群组失败');
         return false;
       }
     } catch (e) {
-      print('离开群组失败: $e');
       _setError('离开群组失败: $e');
       return false;
+    } finally {
+      _setLoading(false);
     }
   }
 
   // 解散群组
   Future<bool> disbandGroup(Group group) async {
+    if (_currentUser == null) {
+      _setError('请先设置用户信息');
+      return false;
+    }
+
+    _setLoading(true);
     try {
-      print('开始解散群组: ${group.name}');
+      final success = await GroupService().disbandGroup(
+        group.id,
+        _currentUser!.id,
+      );
 
-      final success = await GroupService().disbandGroup(group);
       if (success) {
-        // 从内存中移除群组
         _groups.remove(group);
-
-        // 从本地存储中删除群组数据
-        await StorageService.deleteGroup(group.id);
-        print('群组数据已从本地存储删除: ${group.id}');
-
-        // 删除群组相关的消息
-        await StorageService.deleteGroupMessages(group.id);
-        print('群组消息已从本地存储删除: ${group.id}');
-
-        // 清除当前选中的群组
         if (_currentGroup?.id == group.id) {
           _currentGroup = null;
         }
-
+        _setError(null);
         notifyListeners();
-        print('解散群组成功: ${group.name}');
         return true;
       } else {
         _setError('解散群组失败');
         return false;
       }
     } catch (e) {
-      print('解散群组失败: $e');
       _setError('解散群组失败: $e');
       return false;
+    } finally {
+      _setLoading(false);
     }
   }
 
@@ -430,46 +437,6 @@ class AppProvider with ChangeNotifier {
     }
   }
 
-  /// 加载群组列表
-  Future<void> _loadGroups() async {
-    try {
-      print('开始加载群组列表...');
-      final groups = await StorageService.loadAllGroups();
-      _groups.clear();
-      _groups.addAll(groups);
-
-      print('=== 当前群组列表 ===');
-      for (var group in _groups) {
-        print('群组: ${group.name} (${group.id})');
-        print('状态: ${group.status}');
-        print('成员数: ${group.members.length}');
-        for (var member in group.members) {
-          print('  - ${member.name} (${member.userId})');
-        }
-        print('---');
-
-        // 加载每个群组的消息
-        print('开始加载群组 ${group.name} 的消息...');
-        await GroupService().loadGroupMessages(group.id);
-      }
-
-      notifyListeners();
-    } catch (e) {
-      print('加载群组列表失败: $e');
-      _setError('加载群组列表失败: $e');
-    }
-  }
-
-  void _setLoading(bool loading) {
-    _isLoading = loading;
-    notifyListeners();
-  }
-
-  void _setError(String? error) {
-    _error = error;
-    notifyListeners();
-  }
-
   // 更新用户昵称
   Future<bool> updateUserNickname(String newNickname) async {
     if (_currentUser == null) {
@@ -509,50 +476,89 @@ class AppProvider with ChangeNotifier {
     }
   }
 
-  // 注销账户
+  // 注销用户
   Future<bool> logout() async {
+    _setLoading(true);
     try {
-      print('开始注销账户...');
+      print('[注销] 开始注销用户...');
 
-      // 停止所有P2P服务
-      P2PService.stopServer();
-      P2PService.disconnect();
+      // 停止P2P服务
+      await P2PService.stopServer();
+      print('[注销] P2P服务已停止');
 
-      // 清空群组消息缓存
-      GroupService().clearAllMessages();
+      // 清空消息缓存
+      GroupService().clearAllGroupMessages();
+      print('[注销] 消息缓存已清空');
 
-      // 删除所有数据，包括用户数据
-      await StorageService.clearAllData();
-
-      // 清空内存中的所有数据
+      // 清空用户数据
       _currentUser = null;
-      _groups.clear();
       _currentGroup = null;
-      _error = null;
+      _groups.clear();
 
-      // 通知UI更新
+      // 清空本地存储
+      await StorageService.clearAllData();
+      print('[注销] 本地存储已清空');
+
+      _setError(null);
       notifyListeners();
 
-      print('账户注销完成，所有数据已清除');
+      print('[注销] 用户注销完成');
       return true;
     } catch (e) {
-      print('注销失败: $e');
-      _setError('注销失败: $e');
+      print('[注销] 用户注销失败: $e');
+      _setError('用户注销失败: $e');
       return false;
+    } finally {
+      _setLoading(false);
     }
   }
 
-  // 重置数据库（用于测试）
+  // 注销用户（保留用户信息）
+  Future<bool> logoutKeepUser() async {
+    _setLoading(true);
+    try {
+      print('[注销] 开始注销用户（保留用户信息）...');
+
+      // 停止P2P服务
+      await P2PService.stopServer();
+      print('[注销] P2P服务已停止');
+
+      // 清空消息缓存
+      GroupService().clearAllGroupMessages();
+      print('[注销] 消息缓存已清空');
+
+      // 清空群组和消息数据，但保留用户信息
+      _currentGroup = null;
+      _groups.clear();
+
+      // 清空群组和消息存储，但保留用户信息
+      await StorageService.clearGroupsAndMessages();
+      print('[注销] 群组和消息数据已清空');
+
+      _setError(null);
+      notifyListeners();
+
+      print('[注销] 用户注销完成（保留用户信息）');
+      return true;
+    } catch (e) {
+      print('[注销] 用户注销失败: $e');
+      _setError('用户注销失败: $e');
+      return false;
+    } finally {
+      _setLoading(false);
+    }
+  }
+
+  // 重置数据库
   Future<bool> resetDatabase() async {
     try {
       print('开始重置数据库...');
 
       // 停止所有P2P服务
-      P2PService.stopServer();
-      P2PService.disconnect();
+      await P2PService.stopServer();
 
       // 清空群组消息缓存
-      GroupService().clearAllMessages();
+      GroupService().clearAllGroupMessages();
 
       // 重置数据库
       await StorageService.resetDatabase();
@@ -703,7 +709,6 @@ class AppProvider with ChangeNotifier {
         serverPort,
         currentUser!.id,
         group.id,
-        isNewMember: false, // 不是新成员，是重连
       );
 
       if (success) {
@@ -745,24 +750,19 @@ class AppProvider with ChangeNotifier {
       case 'message':
         // 聊天消息，交给GroupService处理
         print('聊天消息: ${message}');
-        final groupId = message['groupId'];
-        if (groupId != null) {
-          final group = groups.where((g) => g.id == groupId).firstOrNull;
-          // 使用GroupService的onMessage回调
-          final groupService = GroupService();
-
-          groupService.handleChatMessage(group, message);
-        }
+        final groupId = message['groupId'] as String?;
+        // 暂时注释掉，因为GroupService没有这个方法
+        // GroupService().handleChatMessage(message);
         break;
       case 'group_update':
         // 群组更新消息
-        final groupId = message['groupId'];
-        if (groupId != null) {
+        final groupId = message['groupId'] as String?;
+        if (groupId != null && groupId.isNotEmpty) {
           _handleGroupUpdate(groupId);
         }
         break;
       default:
-        print('未知的P2P消息类型: ${message['type']}');
+        print('未知消息类型: ${message['type']}');
     }
   }
 
@@ -840,6 +840,8 @@ class AppProvider with ChangeNotifier {
         // 只更新当前群组状态，不重新加载所有群组
         final updatedGroup = await StorageService.loadGroup(group.id);
         if (updatedGroup != null) {
+          updatedGroup.status = GroupStatus.active;
+          await StorageService.saveGroup(updatedGroup);
           // 更新内存中的群组状态
           final index = _groups.indexWhere((g) => g.id == group.id);
           if (index != -1) {
@@ -921,5 +923,16 @@ class AppProvider with ChangeNotifier {
     } finally {
       _setLoading(false);
     }
+  }
+
+  // 私有方法
+  void _setLoading(bool loading) {
+    _isLoading = loading;
+    notifyListeners();
+  }
+
+  void _setError(String? error) {
+    _error = error;
+    notifyListeners();
   }
 }

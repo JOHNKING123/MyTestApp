@@ -22,74 +22,453 @@ typedef GroupUpdateCallback = void Function(String groupId);
 typedef ConnectionValidator =
     Future<bool> Function(String userId, String groupId, bool isNewMember);
 
-// 连接信息类
-class P2PConnection {
-  final WebSocket webSocket;
+/// 连接事件类型
+enum ConnectionEventType {
+  connected,
+  disconnected,
+  messageReceived,
+  error,
+  heartbeat,
+}
+
+/// 连接状态
+enum ConnectionStatus {
+  connecting, // 连接中
+  connected, // 已连接
+  disconnected, // 已断开
+  error, // 错误状态
+}
+
+/// 连接事件
+class ConnectionEvent {
+  final ConnectionEventType type;
+  final String connectionId;
   final String userId;
   final String groupId;
+  final DateTime timestamp;
+  final String? error;
+
+  ConnectionEvent({
+    required this.type,
+    required this.connectionId,
+    required this.userId,
+    required this.groupId,
+    required this.timestamp,
+    this.error,
+  });
+}
+
+/// 网络消息类
+class NetworkMessage {
+  final String type;
+  final String messageId;
+  final String? groupId;
+  final String senderId;
+  final dynamic content;
+  final DateTime timestamp;
+  final Map<String, dynamic> metadata;
+
+  // 消息类型常量
+  static const String TYPE_JOIN_REQUEST = 'join_request';
+  static const String TYPE_JOIN_RESPONSE = 'join_response';
+  static const String TYPE_CHAT_MESSAGE = 'chat_message';
+  static const String TYPE_HEARTBEAT = 'heartbeat';
+  static const String TYPE_MEMBER_JOINED = 'member_joined';
+  static const String TYPE_MEMBER_LEFT = 'member_left';
+  static const String TYPE_GROUP_UPDATE = 'group_update';
+  static const String TYPE_ERROR = 'error';
+
+  NetworkMessage({
+    required this.type,
+    required this.messageId,
+    this.groupId,
+    required this.senderId,
+    required this.content,
+    required this.timestamp,
+    Map<String, dynamic>? metadata,
+  }) : metadata = metadata ?? {};
+
+  Map<String, dynamic> toJson() {
+    return {
+      'type': type,
+      'messageId': messageId,
+      'groupId': groupId,
+      'senderId': senderId,
+      'content': content,
+      'timestamp': timestamp.millisecondsSinceEpoch,
+      'metadata': metadata,
+    };
+  }
+
+  factory NetworkMessage.fromJson(Map<String, dynamic> json) {
+    return NetworkMessage(
+      type: json['type'],
+      messageId: json['messageId'],
+      groupId: json['groupId'],
+      senderId: json['senderId'],
+      content: json['content'],
+      timestamp: DateTime.fromMillisecondsSinceEpoch(json['timestamp']),
+      metadata: json['metadata'] ?? {},
+    );
+  }
+}
+
+/// 服务器信息类
+class ServerInfo {
+  final String serverIP;
+  final int serverPort;
+  final bool isRunning;
+  final int connectionCount;
+  final DateTime startTime;
+  final Map<String, int> groupConnections;
+
+  ServerInfo({
+    required this.serverIP,
+    required this.serverPort,
+    required this.isRunning,
+    required this.connectionCount,
+    required this.startTime,
+    required this.groupConnections,
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'serverIP': serverIP,
+      'serverPort': serverPort,
+      'isRunning': isRunning,
+      'connectionCount': connectionCount,
+      'startTime': startTime.millisecondsSinceEpoch,
+      'groupConnections': groupConnections,
+    };
+  }
+}
+
+/// P2P连接类
+class P2PConnection {
+  final WebSocket webSocket;
+  String userId; // 改为非final，允许后续设置
+  String groupId; // 改为非final，允许后续设置
   final String connectionId;
   DateTime lastHeartbeat;
+  ConnectionStatus status;
+
+  // 连接统计
+  int messageCount;
+  DateTime connectedAt;
+  String? lastError;
 
   P2PConnection({
     required this.webSocket,
     required this.userId,
     required this.groupId,
     required this.connectionId,
-  }) : lastHeartbeat = DateTime.now();
+  }) : lastHeartbeat = DateTime.now(),
+       status = ConnectionStatus.connecting,
+       messageCount = 0,
+       connectedAt = DateTime.now();
 
   void updateHeartbeat() {
     lastHeartbeat = DateTime.now();
   }
 
   bool isAlive() {
-    return DateTime.now().difference(lastHeartbeat) < Duration(seconds: 5);
+    // 检查连接状态
+    if (status == ConnectionStatus.disconnected ||
+        status == ConnectionStatus.error) {
+      return false;
+    }
+
+    // 检查心跳时间（允许更长的超时时间）
+    final heartbeatTimeout = Duration(seconds: 30);
+    if (DateTime.now().difference(lastHeartbeat) > heartbeatTimeout) {
+      print('连接 ${connectionId} 心跳超时');
+      status = ConnectionStatus.error;
+      return false;
+    }
+
+    return true;
+  }
+
+  bool sendMessage(String message) {
+    try {
+      if (status != ConnectionStatus.connected) {
+        print('连接 ${connectionId} 状态不正确: $status');
+        return false;
+      }
+
+      webSocket.add(message);
+      messageCount++;
+      updateHeartbeat(); // 发送消息时更新心跳
+      return true;
+    } catch (e) {
+      lastError = e.toString();
+      status = ConnectionStatus.error;
+      print('发送消息失败: $e');
+      return false;
+    }
+  }
+
+  void close() {
+    try {
+      webSocket.close();
+      status = ConnectionStatus.disconnected;
+    } catch (e) {
+      lastError = e.toString();
+    }
   }
 }
 
-class P2PService {
-  static HttpServer? _server;
-  static Map<String, P2PConnection> _connections = {};
-  static Function(Map<String, dynamic>)? onMessage;
-  static String? _localIP;
-  static int _port = 36324;
+/// 消息路由器
+class MessageRouter {
+  static void broadcastToGroup(String groupId, Map<String, dynamic> message) {
+    final messageStr = jsonEncode(message);
+    final connections = P2PService.getConnectionsByGroup(groupId);
+    final senderId = message['senderId'];
 
-  // 心跳相关
-  static Timer? _heartbeatTimer;
-  static const Duration _heartbeatInterval = Duration(seconds: 3);
-  static const Duration _connectionTimeout = Duration(seconds: 5);
+    print('广播消息到群组 $groupId，连接数: ${connections.length}，发送者: $senderId');
 
-  // 连接管理
-  static Map<String, DateTime> _lastHeartbeat = {};
-  static Map<String, Timer> _connectionTimers = {};
+    // 检查是否有有效连接
+    final aliveConnections = connections
+        .where((conn) => conn.isAlive())
+        .toList();
+    if (aliveConnections.isEmpty) {
+      print('群组 $groupId 没有活跃连接，消息无法发送');
+      return;
+    }
 
-  // 重连限制
-  static Map<String, int> _reconnectAttempts = {};
-  static const int _maxReconnectAttempts = 3;
-  static const Duration _reconnectCooldown = Duration(seconds: 30);
-
-  // 连接验证器回调函数类型
-  static Future<bool> Function(String userId, String groupId, bool isNewMember)?
-  _connectionValidator;
-
-  // 回调函数
-  static MessageCallback? onMessageReceived;
-  static GroupUpdateCallback? onGroupUpdated;
-  static ConnectionValidator? onConnectionValidate;
-  static ConnectionDisconnectCallback? onConnectionDisconnect; // 新增连接断开回调
-
-  // 设置连接验证器
-  static void setConnectionValidator(
-    Future<bool> Function(String userId, String groupId, bool isNewMember)?
-    validator,
-  ) {
-    _connectionValidator = validator;
-    print('连接验证器已设置: ${validator != null ? "启用" : "禁用"}');
+    for (final connection in aliveConnections) {
+      // 在P2P架构中，所有连接都应该接收消息
+      // 发送者自己的连接也需要接收消息，因为这是服务器端的连接
+      // 消息去重机制会防止消息循环
+      try {
+        final success = connection.sendMessage(messageStr);
+        if (!success) {
+          print('发送消息到连接 ${connection.connectionId} 失败');
+          P2PService.removeConnection(connection.connectionId);
+        } else {
+          print(
+            '消息发送成功到连接: ${connection.connectionId} (用户: ${connection.userId})',
+          );
+        }
+      } catch (e) {
+        print('发送消息到连接 ${connection.connectionId} 出错: $e');
+        P2PService.removeConnection(connection.connectionId);
+      }
+    }
   }
 
-  // 获取本地IP地址
-  static Future<String> getLocalIP() async {
-    if (_localIP != null) return _localIP!;
+  static void sendToUser(
+    String userId,
+    String groupId,
+    Map<String, dynamic> message,
+  ) {
+    final messageStr = jsonEncode(message);
+    final connections = P2PService.getConnectionsByGroup(groupId);
 
+    // 查找用户的活跃连接
+    final userConnections = connections
+        .where((conn) => conn.userId == userId && conn.isAlive())
+        .toList();
+
+    if (userConnections.isEmpty) {
+      print('用户 $userId 在群组 $groupId 中没有活跃连接');
+      return;
+    }
+
+    // 发送给用户的第一个活跃连接
+    final connection = userConnections.first;
+    try {
+      final success = connection.sendMessage(messageStr);
+      if (success) {
+        print('消息发送成功到用户: $userId (连接: ${connection.connectionId})');
+        return;
+      } else {
+        print('发送消息到用户 $userId 失败');
+        P2PService.removeConnection(connection.connectionId);
+      }
+    } catch (e) {
+      print('发送消息到用户 $userId 出错: $e');
+      P2PService.removeConnection(connection.connectionId);
+    }
+  }
+
+  static void routeMessage(Map<String, dynamic> message) {
+    final messageType = message['type'];
+
+    // 优先处理心跳消息，不取groupId
+    if (messageType == NetworkMessage.TYPE_HEARTBEAT) {
+      print('收到心跳消息，直接处理');
+      _handleHeartbeat(message);
+      return;
+    }
+
+    // 其他类型消息需要groupId
+    final groupId = message['groupId'] as String?;
+    print('路由消息: type=$messageType, groupId=$groupId');
+
+    switch (messageType) {
+      case NetworkMessage.TYPE_CHAT_MESSAGE:
+        if (groupId != null && groupId.isNotEmpty) {
+          broadcastToGroup(groupId, message);
+        }
+        break;
+      case NetworkMessage.TYPE_JOIN_REQUEST:
+        if (groupId != null && groupId.isNotEmpty) {
+          _handleJoinRequest(message);
+        }
+        break;
+      case NetworkMessage.TYPE_JOIN_RESPONSE:
+        if (groupId != null && groupId.isNotEmpty) {
+          final senderId = message['senderId'];
+          if (senderId != null) {
+            sendToUser(senderId, groupId, message);
+          }
+        }
+        break;
+      case NetworkMessage.TYPE_MEMBER_JOINED:
+      case NetworkMessage.TYPE_MEMBER_LEFT:
+        if (groupId != null && groupId.isNotEmpty) {
+          broadcastToGroup(groupId, message);
+        }
+        break;
+      default:
+        print('未知消息类型: $messageType');
+    }
+  }
+
+  static void _handleJoinRequest(Map<String, dynamic> message) {
+    // 处理加入请求的逻辑
+    final senderId = message['senderId'];
+    final groupId = message['groupId'];
+    print('处理加入请求: $senderId -> $groupId');
+  }
+
+  static void _handleHeartbeat(Map<String, dynamic> message) {
+    // 处理心跳消息的逻辑 - 更新所有连接的心跳
+    final connections = P2PService.getConnections();
+    for (final connection in connections.values) {
+      connection.updateHeartbeat();
+    }
+    print('心跳消息处理成功，更新了 ${connections.length} 个连接的心跳');
+  }
+}
+
+/// 连接管理器
+class ConnectionManager {
+  static final Map<String, P2PConnection> _connections = {};
+  static Timer? _heartbeatTimer;
+  static Timer? _cleanupTimer;
+
+  static void addConnection(P2PConnection connection) {
+    _connections[connection.connectionId] = connection;
+    connection.status = ConnectionStatus.connected;
+    print(
+      '添加连接: ${connection.connectionId} (用户: ${connection.userId}, 群组: ${connection.groupId})',
+    );
+  }
+
+  static void removeConnection(String connectionId) {
+    final connection = _connections.remove(connectionId);
+    if (connection != null) {
+      connection.close();
+      print('移除连接: $connectionId');
+    }
+  }
+
+  static P2PConnection? getConnection(String connectionId) {
+    return _connections[connectionId];
+  }
+
+  static List<P2PConnection> getConnectionsByGroup(String groupId) {
+    return _connections.values
+        .where((connection) => connection.groupId == groupId)
+        .toList();
+  }
+
+  static void startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(Duration(seconds: 30), (timer) {
+      _sendHeartbeatToAll();
+    });
+  }
+
+  static void _sendHeartbeatToAll() {
+    final heartbeatMessage = NetworkMessage(
+      type: NetworkMessage.TYPE_HEARTBEAT,
+      messageId: _generateMessageId(),
+      groupId: '0',
+      senderId: '',
+      content: null,
+      timestamp: DateTime.now(),
+    );
+
+    final messageStr = jsonEncode(heartbeatMessage.toJson());
+
+    for (final connection in _connections.values) {
+      if (connection.isAlive()) {
+        try {
+          connection.sendMessage(messageStr);
+        } catch (e) {
+          print('发送心跳到 ${connection.connectionId} 失败: $e');
+        }
+      }
+    }
+  }
+
+  static void startCleanupTimer() {
+    _cleanupTimer?.cancel();
+    _cleanupTimer = Timer.periodic(Duration(seconds: 60), (timer) {
+      cleanupDeadConnections();
+    });
+  }
+
+  static void cleanupDeadConnections() {
+    final deadConnections = <String>[];
+
+    for (final entry in _connections.entries) {
+      final connection = entry.value;
+      if (!connection.isAlive()) {
+        deadConnections.add(entry.key);
+        print('标记死连接: ${connection.connectionId}');
+      }
+    }
+
+    for (final connectionId in deadConnections) {
+      removeConnection(connectionId);
+    }
+
+    if (deadConnections.isNotEmpty) {
+      print('清理了 ${deadConnections.length} 个死连接');
+    }
+  }
+
+  static Map<String, P2PConnection> getConnections() {
+    return Map.unmodifiable(_connections);
+  }
+
+  static int getConnectionCount() {
+    return _connections.length;
+  }
+
+  static Map<String, int> getGroupConnections() {
+    final groupConnections = <String, int>{};
+    for (final connection in _connections.values) {
+      groupConnections[connection.groupId] =
+          (groupConnections[connection.groupId] ?? 0) + 1;
+    }
+    return groupConnections;
+  }
+
+  static String _generateMessageId() {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final random = Random().nextInt(1000000);
+    return 'msg_${timestamp}_$random';
+  }
+}
+
+/// 网络工具类
+class NetworkUtils {
+  static Future<String> getLocalIP() async {
     try {
       print('正在获取本地IP地址...');
       for (var interface in await NetworkInterface.list()) {
@@ -98,9 +477,8 @@ class P2PService {
           print('  - ${addr.address} (${addr.type})');
           if (addr.type == InternetAddressType.IPv4 &&
               !addr.address.startsWith('127.')) {
-            _localIP = addr.address;
-            print('选择IP地址: $_localIP');
-            return _localIP!;
+            print('选择IP地址: ${addr.address}');
+            return addr.address;
           }
         }
       }
@@ -109,18 +487,50 @@ class P2PService {
     }
 
     // 如果无法获取IP，使用localhost（适用于模拟器）
-    _localIP = '127.0.0.1';
-    print('使用localhost地址: $_localIP');
-    return _localIP!;
+    print('使用localhost地址: 127.0.0.1');
+    return '127.0.0.1';
   }
 
-  /// 测试网络连通性（ping测试）
+  static Future<int> getAvailablePort() async {
+    // 查找可用端口
+    for (int port = 36324; port < 36400; port++) {
+      if (await isPortAvailable(port)) {
+        return port;
+      }
+    }
+    throw Exception('没有可用的端口');
+  }
+
+  static Future<bool> isPortAvailable(int port) async {
+    try {
+      final server = await ServerSocket.bind(InternetAddress.anyIPv4, port);
+      await server.close();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<bool> testConnection(String ip, int port) async {
+    try {
+      print('开始连接测试: $ip:$port');
+      final socket = await Socket.connect(
+        ip,
+        port,
+        timeout: Duration(seconds: 5),
+      );
+      await socket.close();
+      print('连接测试成功: $ip:$port');
+      return true;
+    } catch (e) {
+      print('连接测试失败: $ip:$port - $e');
+      return false;
+    }
+  }
+
   static Future<bool> pingTest(String targetIP) async {
     try {
       print('开始网络连通性测试: $targetIP');
-
-      // 尝试连接一个常用的端口来测试网络连通性
-      // 这里使用80端口（HTTP）作为连通性测试，因为大多数设备都会响应
       final socket = await Socket.connect(
         targetIP,
         80,
@@ -154,31 +564,59 @@ class P2PService {
       return false;
     }
   }
+}
 
-  /// 测试端口连通性
-  static Future<bool> portTest(String targetIP, int port) async {
-    try {
-      print('开始端口测试: $targetIP:$port');
+/// P2P服务主类
+class P2PService {
+  static HttpServer? _server;
+  static String? _localIP;
+  static int _port = 36324;
+  static bool _isRunning = false;
+  static DateTime? _startTime;
 
-      final socket = await Socket.connect(
-        targetIP,
-        port,
-        timeout: Duration(seconds: 5),
-      );
-      socket.destroy();
-      print('端口测试成功: $targetIP:$port');
-      return true;
-    } catch (e) {
-      print('端口测试失败: $targetIP:$port - $e');
-      return false;
-    }
+  // 事件控制器
+  static final StreamController<ConnectionEvent> _eventController =
+      StreamController<ConnectionEvent>.broadcast();
+  static final StreamController<NetworkMessage> _messageController =
+      StreamController<NetworkMessage>.broadcast();
+
+  // 回调函数
+  static MessageCallback? onMessageReceived;
+  static GroupUpdateCallback? onGroupUpdated;
+  static ConnectionValidator? onConnectionValidate;
+  static ConnectionDisconnectCallback? onConnectionDisconnect;
+
+  // 消息去重缓存 - 防止消息循环
+  static final Set<String> _processedMessageIds = {};
+  static const int _maxProcessedMessages = 1000;
+
+  // 获取事件流
+  static Stream<ConnectionEvent> get connectionEvents =>
+      _eventController.stream;
+  static Stream<NetworkMessage> get messageEvents => _messageController.stream;
+
+  // 设置连接验证器
+  static void setConnectionValidator(ConnectionValidator? validator) {
+    onConnectionValidate = validator;
+    print('连接验证器已设置: ${validator != null ? "启用" : "禁用"}');
   }
 
-  /// 启动P2P服务器（群组创建者调用）
-  static Future<bool> startServer() async {
-    if (_server != null) {
+  // 获取本地IP地址
+  static Future<String> getLocalIP() async {
+    if (_localIP != null) return _localIP!;
+    _localIP = await NetworkUtils.getLocalIP();
+    return _localIP!;
+  }
+
+  /// 启动P2P服务器
+  static Future<bool> startServer([int? port]) async {
+    if (_isRunning) {
       print('P2P服务器已经启动');
       return true;
+    }
+
+    if (port != null) {
+      _port = port;
     }
 
     try {
@@ -193,8 +631,12 @@ class P2PService {
         _handleNewConnection(webSocket);
       });
 
-      // 启动心跳检测
-      _startHeartbeatCheck();
+      // 启动连接管理
+      ConnectionManager.startHeartbeat();
+      ConnectionManager.startCleanupTimer();
+
+      _isRunning = true;
+      _startTime = DateTime.now();
 
       final serverIP = await getLocalIP();
       print('P2P服务器启动成功: $serverIP:$_port');
@@ -205,875 +647,394 @@ class P2PService {
     }
   }
 
-  /// 处理新的WebSocket连接
-  static void _handleNewConnection(WebSocket webSocket) {
-    print('新的WebSocket连接: ${webSocket.hashCode}');
-
-    webSocket.listen(
-      (data) {
-        _handleMessage(data, webSocket);
-      },
-      onDone: () {
-        print('WebSocket连接断开: ${webSocket.hashCode}');
-        _removeConnectionByWebSocket(webSocket);
-      },
-      onError: (e) {
-        print('WebSocket连接错误: $e');
-        _removeConnectionByWebSocket(webSocket);
-      },
-    );
-  }
-
-  /// 处理接收到的消息
-  static void _handleMessage(dynamic data, WebSocket webSocket) {
-    try {
-      final message = jsonDecode(data.toString());
-      final messageType = message['type'];
-
-      if (messageType == 'auth') {
-        print('开始处理身份验证消息...'); // 添加身份验证开始日志
-        // 处理身份验证
-        _handleAuthMessage(message, webSocket);
-      } else if (messageType == 'auth_success') {
-        // 处理认证成功响应
-        final connectionId = message['connectionId'];
-        print('收到认证成功响应: $connectionId');
-        // 认证成功，不需要特殊处理，连接已建立
-      } else if (messageType == 'ping') {
-        // 处理心跳请求
-        _handlePingMessage(webSocket);
-      } else if (messageType == 'message') {
-        // 处理聊天消息
-        _handleChatMessage(message, webSocket);
-      } else if (messageType == 'group_update') {
-        // 处理群组更新消息
-        _handleGroupUpdateMessage(message, webSocket);
-      } else if (messageType == 'member_join') {
-        // 处理成员加入消息
-        _handleMemberJoinMessage(message, webSocket);
-      } else if (messageType == 'auth_failure') {
-        // 处理认证失败
-        final userId = message['userId'];
-        final groupId = message['groupId'];
-        final reason = message['reason'];
-        print('收到认证失败响应: 用户=$userId, 群组=$groupId, 原因=$reason');
-
-        // 主动断开连接
-        final connection = _connections.values
-            .where((conn) => conn.userId == userId && conn.groupId == groupId)
-            .firstOrNull;
-        if (connection != null) {
-          print('主动断开认证失败的连接: ${connection.connectionId}');
-          connection.webSocket.close();
-        }
-
-        // 移除连接
-        _removeConnection(connection!.connectionId);
-
-        // 设置群组状态为不可用
-        _setGroupUnavailable(groupId);
-
-        // 通知本地应用
-        if (onMessage != null) {
-          onMessage!(message);
-        }
-      } else {
-        print('_handleMessage 未知消息类型: $messageType');
-      }
-    } catch (e) {
-      print('处理消息时发生错误: $e');
-    }
-  }
-
-  /// 根据WebSocket移除连接
-  static void _removeConnectionByWebSocket(WebSocket webSocket) {
-    final connectionToRemove = _connections.values
-        .where((conn) => conn.webSocket == webSocket)
-        .firstOrNull;
-
-    if (connectionToRemove != null) {
-      print('移除连接: ${connectionToRemove.connectionId}');
-      _removeConnection(connectionToRemove.connectionId);
-    }
-  }
-
-  /// 启动心跳检测
-  static void _startHeartbeatCheck() {
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (timer) {
-      _checkConnections();
-    });
-    print('心跳检查已启动，间隔: ${_heartbeatInterval.inSeconds}秒');
-  }
-
-  /// 检查连接状态
-  static void _checkConnections() {
-    final now = DateTime.now();
-    final toRemove = <String>[];
-
-    for (final entry in _connections.entries) {
-      final connectionId = entry.key;
-      final connection = entry.value;
-
-      if (!connection.isAlive()) {
-        print('连接超时，准备移除: $connectionId (用户: ${connection.userId})');
-        toRemove.add(connectionId);
-      }
-    }
-
-    for (final connectionId in toRemove) {
-      final connection = _connections[connectionId];
-      if (connection != null) {
-        print('关闭超时连接: $connectionId');
-        connection.webSocket.close();
-        _removeConnection(connectionId);
-      }
-    }
-  }
-
   /// 停止P2P服务器
-  static void stopServer() {
-    print('正在停止P2P服务器...');
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = null;
-
-    _server?.close();
-    _server = null;
-
-    for (var connection in _connections.values) {
-      connection.webSocket.close();
+  static Future<void> stopServer() async {
+    if (!_isRunning) {
+      print('P2P服务器未运行');
+      return;
     }
-    _connections.clear();
-    _lastHeartbeat.clear();
 
-    for (var timer in _connectionTimers.values) {
-      timer.cancel();
+    try {
+      print('正在停止P2P服务器...');
+
+      // 关闭所有连接
+      final connections = ConnectionManager.getConnections();
+      for (final connection in connections.values) {
+        connection.close();
+      }
+
+      // 停止定时器
+      ConnectionManager._heartbeatTimer?.cancel();
+      ConnectionManager._cleanupTimer?.cancel();
+
+      // 关闭服务器
+      await _server?.close();
+      _server = null;
+
+      _isRunning = false;
+      _startTime = null;
+
+      print('P2P服务器已停止');
+    } catch (e) {
+      print('停止P2P服务器失败: $e');
     }
-    _connectionTimers.clear();
-
-    // 清理重连计数
-    _reconnectAttempts.clear();
-    print('重连计数已清理');
-
-    print('P2P服务器已停止');
   }
 
-  /// 连接到P2P服务器（群组成员调用）
+  /// 连接到P2P服务器
   static Future<bool> connectToServer(
     String serverIP,
     int port,
     String userId,
-    String groupId, {
-    bool isNewMember = false, // 新增参数标识是否为新成员
-  }) async {
-    // 检查是否已存在相同用户的连接
-    final existingConnection = _connections.values
-        .where((conn) => conn.userId == userId && conn.groupId == groupId)
-        .firstOrNull;
+    String groupId,
+  ) async {
+    try {
+      print('连接到P2P服务器: $serverIP:$port (用户: $userId, 群组: $groupId)');
 
-    if (existingConnection != null) {
-      print('已存在相同用户的连接，关闭旧连接: ${existingConnection.connectionId}');
-      existingConnection.webSocket.close();
-      _removeConnection(existingConnection.connectionId);
-    }
+      // 修复模拟器IP地址问题
+      if (serverIP == '10.0.2.15') {
+        // 这里是我为了模拟器网络设置的，不要变更这里的代码，否则会连接失败
+        serverIP = '10.0.2.2';
+        port = 8081;
+      }
 
-    // 在模拟器环境中进行IP转换
-    String targetIP = serverIP;
-    int targetPort = port;
+      print('最终连接地址: $serverIP:$port');
+      final webSocket = await WebSocket.connect('ws://$serverIP:$port');
 
-    // 如果目标IP是模拟器A的IP (10.0.2.15)，转换为主机地址和端口转发端口
-    if (serverIP == '10.0.2.15') {
-      print('检测到目标服务器是模拟器A，转换连接地址');
-      print('原始地址: $serverIP:$port');
-      targetIP = '10.0.2.2';
-      targetPort = 8081; // 端口转发端口
-      print('转换后地址: $targetIP:$targetPort');
-    }
+      final connectionId = _generateConnectionId();
+      final connection = P2PConnection(
+        webSocket: webSocket,
+        userId: userId,
+        groupId: groupId,
+        connectionId: connectionId,
+      );
 
-    // 尝试不同的IP地址
-    final testIPs = [targetIP, '127.0.0.1', 'localhost'];
+      // 设置消息处理器
+      webSocket.listen(
+        (data) => _handleIncomingMessage(connection, data),
+        onError: (error) => _handleConnectionError(connection, error),
+        onDone: () => _handleConnectionDisconnect(connection),
+      );
 
-    for (final ip in testIPs) {
-      try {
-        print(
-          '正在连接到P2P服务器: $ip:$targetPort (用户: $userId, 群组: $groupId, 是否新成员: $isNewMember)',
-        );
+      // 发送连接初始化消息
+      final initMessage = {
+        'type': 'connection_init',
+        'userId': userId,
+        'groupId': groupId,
+        'connectionId': connectionId,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
 
-        final uri = Uri.parse('ws://$ip:$targetPort');
-        print('WebSocket URI: $uri');
+      final initMessageStr = jsonEncode(initMessage);
+      webSocket.add(initMessageStr);
+      print('发送连接初始化消息: $initMessageStr');
 
-        final webSocket = await WebSocket.connect(uri.toString());
-        print('WebSocket连接成功: $ip:$targetPort');
+      // 添加到连接管理器
+      ConnectionManager.addConnection(connection);
 
-        // 生成连接ID（由客户端生成）
-        final connectionId =
-            '${userId}_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(1000)}';
-        print('生成连接ID: $connectionId');
-
-        // 发送身份验证消息
-        final authMessage = {
-          'type': 'auth',
-          'userId': userId,
-          'groupId': groupId,
-          'connectionId': connectionId, // 传递连接ID给服务器
-          'isNewMember': isNewMember, // 添加是否为新成员的标识
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        };
-
-        webSocket.add(jsonEncode(authMessage));
-        print('发送身份验证消息: $authMessage');
-
-        // 创建连接对象
-        final connection = P2PConnection(
-          webSocket: webSocket,
+      // 发送连接事件
+      _eventController.add(
+        ConnectionEvent(
+          type: ConnectionEventType.connected,
+          connectionId: connectionId,
           userId: userId,
           groupId: groupId,
-          connectionId: connectionId,
-        );
+          timestamp: DateTime.now(),
+        ),
+      );
 
-        _connections[connectionId] = connection;
-        _lastHeartbeat[connectionId] = DateTime.now();
-
-        // 启动心跳定时器
-        _startClientHeartbeat(connectionId);
-
-        webSocket.listen(
-          (data) {
-            _handleClientMessage(data, connectionId);
-          },
-          onDone: () {
-            print('P2P连接断开: $connectionId');
-            _handleConnectionDisconnect(connectionId, userId, groupId);
-          },
-          onError: (e) {
-            print('P2P连接错误: $e');
-            _handleConnectionDisconnect(connectionId, userId, groupId);
-          },
-        );
-
-        print('P2P客户端连接成功: $ip:$targetPort (用户: $userId)');
-
-        // 连接成功，清除重连计数
-        final reconnectKey = '${userId}_$groupId';
-        _reconnectAttempts.remove(reconnectKey);
-        print('连接成功，清除重连计数: $reconnectKey');
-
-        return true;
-      } catch (e) {
-        print('连接P2P服务器失败 ($ip:$targetPort): $e');
-      }
+      print('成功连接到P2P服务器');
+      return true;
+    } catch (e) {
+      print('连接P2P服务器失败: $e');
+      return false;
     }
+  }
 
-    print('所有连接尝试都失败了');
-    return false;
+  /// 处理新连接
+  static void _handleNewConnection(WebSocket webSocket) {
+    final connectionId = _generateConnectionId();
+
+    // 创建临时连接对象
+    final connection = P2PConnection(
+      webSocket: webSocket,
+      userId: '',
+      groupId: '',
+      connectionId: connectionId,
+    );
+
+    // 设置消息处理器
+    webSocket.listen(
+      (data) => _handleIncomingMessage(connection, data),
+      onError: (error) => _handleConnectionError(connection, error),
+      onDone: () => _handleConnectionDisconnect(connection),
+    );
+
+    print('新的WebSocket连接: $connectionId');
+  }
+
+  /// 处理接收到的消息
+  static void _handleIncomingMessage(P2PConnection connection, dynamic data) {
+    try {
+      final messageStr = data.toString();
+      final messageData = jsonDecode(messageStr);
+
+      print('收到消息: ${messageData['type']}');
+
+      // 处理连接初始化消息
+      if (messageData['type'] == 'connection_init') {
+        connection.userId = messageData['userId'] ?? '';
+        connection.groupId = messageData['groupId'] ?? '';
+        connection.status = ConnectionStatus.connected;
+
+        // 检查是否已存在相同用户的连接，如果存在则移除旧连接
+        final existingConnections = ConnectionManager.getConnectionsByGroup(
+          connection.groupId,
+        );
+        for (final existingConn in existingConnections) {
+          if (existingConn.userId == connection.userId &&
+              existingConn.connectionId != connection.connectionId) {
+            print('发现重复连接，移除旧连接: ${existingConn.connectionId}');
+            ConnectionManager.removeConnection(existingConn.connectionId);
+          }
+        }
+
+        // 添加到连接管理器
+        ConnectionManager.addConnection(connection);
+
+        // 发送连接事件
+        _eventController.add(
+          ConnectionEvent(
+            type: ConnectionEventType.connected,
+            connectionId: connection.connectionId,
+            userId: connection.userId,
+            groupId: connection.groupId,
+            timestamp: DateTime.now(),
+          ),
+        );
+
+        print(
+          '连接已注册: ${connection.connectionId} (用户: ${connection.userId}, 群组: ${connection.groupId})',
+        );
+        return;
+      }
+
+      // 更新连接信息（如果是第一次收到消息且不是初始化消息）
+      if (connection.userId.isEmpty && messageData['userId'] != null) {
+        connection.userId = messageData['userId'];
+        connection.groupId = messageData['groupId'] ?? '';
+        connection.status = ConnectionStatus.connected;
+
+        // 检查是否已存在相同用户的连接，如果存在则移除旧连接
+        final existingConnections = ConnectionManager.getConnectionsByGroup(
+          connection.groupId,
+        );
+        for (final existingConn in existingConnections) {
+          if (existingConn.userId == connection.userId &&
+              existingConn.connectionId != connection.connectionId) {
+            print('发现重复连接，移除旧连接: ${existingConn.connectionId}');
+            ConnectionManager.removeConnection(existingConn.connectionId);
+          }
+        }
+
+        // 添加到连接管理器
+        ConnectionManager.addConnection(connection);
+
+        // 发送连接事件
+        _eventController.add(
+          ConnectionEvent(
+            type: ConnectionEventType.connected,
+            connectionId: connection.connectionId,
+            userId: connection.userId,
+            groupId: connection.groupId,
+            timestamp: DateTime.now(),
+          ),
+        );
+
+        print(
+          '连接已注册: ${connection.connectionId} (用户: ${connection.userId}, 群组: ${connection.groupId})',
+        );
+      }
+
+      // 更新心跳
+      connection.updateHeartbeat();
+
+      // 检查消息是否已经处理过（防止消息循环）
+      final messageId = messageData['messageId'];
+      if (messageId != null && _processedMessageIds.contains(messageId)) {
+        print('消息已处理过，跳过: $messageId');
+        return;
+      }
+
+      // 添加到已处理消息列表
+      if (messageId != null) {
+        _processedMessageIds.add(messageId);
+
+        // 清理过期的消息ID（保持缓存大小）
+        if (_processedMessageIds.length > _maxProcessedMessages) {
+          final toRemove = _processedMessageIds
+              .take(_processedMessageIds.length - _maxProcessedMessages)
+              .toList();
+          for (final id in toRemove) {
+            _processedMessageIds.remove(id);
+          }
+        }
+      }
+
+      // 路由消息
+      print(
+        '准备路由消息: type=${messageData['type']}, groupId=${messageData['groupId']}',
+      );
+      MessageRouter.routeMessage(messageData);
+
+      // 发送消息事件
+      try {
+        final networkMessage = NetworkMessage.fromJson(messageData);
+        _messageController.add(networkMessage);
+      } catch (e) {
+        print('解析网络消息失败: $e');
+      }
+
+      // 调用消息回调
+      onMessageReceived?.call(messageData);
+    } catch (e) {
+      print('p2p 处理接收消息失败: $e');
+    }
+  }
+
+  /// 处理连接错误
+  static void _handleConnectionError(P2PConnection connection, dynamic error) {
+    print('连接错误: ${connection.connectionId} - $error');
+    connection.status = ConnectionStatus.error;
+    connection.lastError = error.toString();
+
+    _eventController.add(
+      ConnectionEvent(
+        type: ConnectionEventType.error,
+        connectionId: connection.connectionId,
+        userId: connection.userId,
+        groupId: connection.groupId,
+        timestamp: DateTime.now(),
+        error: error.toString(),
+      ),
+    );
   }
 
   /// 处理连接断开
-  static void _handleConnectionDisconnect(
-    String connectionId,
-    String userId,
-    String groupId,
-  ) {
-    print('处理连接断开: $connectionId (用户: $userId, 群组: $groupId)');
+  static void _handleConnectionDisconnect(P2PConnection connection) {
+    print('连接断开: ${connection.connectionId}');
+    connection.status = ConnectionStatus.disconnected;
 
-    // 移除连接
-    _removeConnection(connectionId);
+    // 调用断开回调
+    onConnectionDisconnect?.call(connection.userId, connection.groupId);
 
-    // 检查重连次数限制
-    final reconnectKey = '${userId}_$groupId';
-    final currentAttempts = _reconnectAttempts[reconnectKey] ?? 0;
+    // 从连接管理器中移除
+    ConnectionManager.removeConnection(connection.connectionId);
 
-    if (currentAttempts >= _maxReconnectAttempts) {
-      print('重连次数已达上限 ($_maxReconnectAttempts 次)，停止重连');
-      print('用户 $userId 在群组 $groupId 中的重连尝试次数: $currentAttempts');
-
-      // 清除重连计数
-      _reconnectAttempts.remove(reconnectKey);
-
-      // 通知应用连接断开，但不触发重连
-      if (onConnectionDisconnect != null) {
-        onConnectionDisconnect!(userId, groupId);
-      }
-      return;
-    }
-
-    // 增加重连次数
-    _reconnectAttempts[reconnectKey] = currentAttempts + 1;
-    print(
-      '重连尝试次数: ${_reconnectAttempts[reconnectKey]} / $_maxReconnectAttempts',
+    _eventController.add(
+      ConnectionEvent(
+        type: ConnectionEventType.disconnected,
+        connectionId: connection.connectionId,
+        userId: connection.userId,
+        groupId: connection.groupId,
+        timestamp: DateTime.now(),
+      ),
     );
 
-    // 通知应用连接断开，触发重连逻辑
-    if (onConnectionDisconnect != null) {
-      onConnectionDisconnect!(userId, groupId);
-    }
-  }
-
-  /// 启动客户端心跳
-  static void _startClientHeartbeat(String connectionId) {
-    _connectionTimers[connectionId]?.cancel();
-    _connectionTimers[connectionId] = Timer.periodic(_heartbeatInterval, (
-      timer,
-    ) {
-      final connection = _connections[connectionId];
-      if (connection != null) {
-        final pingMessage = {
-          'type': 'ping',
-          'userId': connection.userId,
-          'groupId': connection.groupId,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        };
-
-        try {
-          connection.webSocket.add(jsonEncode(pingMessage));
-          final timestamp = pingMessage['timestamp'];
-          if (timestamp != null && (timestamp as int) % 100 == 0) {
-            print('发送心跳: ${connection.userId} -> ${connection.groupId}');
-          }
-        } catch (e) {
-          print('发送心跳失败: $e');
-          timer.cancel();
-          _removeConnection(connectionId);
-        }
-      } else {
-        timer.cancel();
-      }
-    });
-  }
-
-  /// 处理客户端消息
-  static void _handleClientMessage(dynamic data, String connectionId) {
-    try {
-      final message = jsonDecode(data);
-      if (message is Map<String, dynamic>) {
-        final messageType = message['type'];
-        if (messageType != 'pong') {
-          print('收到服务器消息: $data');
-        }
-        if (messageType == 'pong') {
-          // 处理心跳响应
-          final connection = _connections[connectionId];
-          if (connection != null) {
-            connection.updateHeartbeat();
-          }
-        } else if (messageType == 'auth_failure') {
-          // 处理认证失败
-          final userId = message['userId'];
-          final groupId = message['groupId'];
-          final reason = message['reason'];
-          print('认证失败: 用户=$userId, 群组=$groupId, 原因=$reason');
-
-          // 移除连接
-          _removeConnection(connectionId);
-
-          // 设置群组状态为不可用
-          _setGroupUnavailable(groupId);
-
-          // 通知本地应用
-          if (onMessage != null) {
-            onMessage!(message);
-          }
-        } else {
-          // 处理其他消息
-          if (onMessage != null) {
-            onMessage!(message);
-          }
-        }
-      }
-    } catch (e) {
-      print('处理客户端消息失败: $e');
-    }
-  }
-
-  /// 发送消息到所有连接的客户端
-  static void broadcastMessage(Map<String, dynamic> message) {
-    final messageStr = jsonEncode(message);
-    print('广播消息: $messageStr');
-    print('当前连接数: ${_connections.length}');
-
-    for (var entry in _connections.entries) {
-      try {
-        final connection = entry.value;
-        print('发送消息到连接: ${entry.key} (用户: ${connection.userId})');
-        connection.webSocket.add(messageStr);
-      } catch (e) {
-        print('发送消息失败: $e');
-        _removeConnection(entry.key);
-      }
-    }
-  }
-
-  /// 发送消息到特定用户
-  static void sendMessageToUser(String userId, Map<String, dynamic> message) {
-    final messageStr = jsonEncode(message);
-    print('发送消息到用户: $userId');
-    print('消息内容: $messageStr');
-
-    // 查找该用户的连接
-    final userConnection = _connections.values
-        .where((conn) => conn.userId == userId)
-        .firstOrNull;
-
-    if (userConnection != null) {
-      try {
-        userConnection.webSocket.add(messageStr);
-        print('消息已发送到用户: $userId');
-      } catch (e) {
-        print('发送消息到用户失败: $e');
-        _removeConnection(userConnection.connectionId);
-      }
-    } else {
-      print('用户 $userId 的连接未找到');
-    }
-  }
-
-  /// 处理心跳消息
-  static void _handlePingMessage(WebSocket webSocket) {
-    final connection = _connections.values
-        .where((conn) => conn.webSocket == webSocket)
-        .firstOrNull;
-    if (connection != null) {
-      connection.updateHeartbeat();
-
-      // 发送心跳响应
-      final pongMessage = {
-        'type': 'pong',
-        'userId': connection.userId,
-        'groupId': connection.groupId,
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-      };
-
-      webSocket.add(jsonEncode(pongMessage));
-    }
-  }
-
-  /// 获取群组详细信息
-  static Future<Map<String, dynamic>?> _getGroupInfo(String groupId) async {
-    try {
-      // 使用GroupService来获取群组信息
-      final groupService = GroupService();
-      final group = await groupService.getGroup(groupId);
-
-      if (group == null) {
-        print('群组不存在: $groupId');
-        return null;
-      }
-
-      // 构建群组信息
-      final groupInfo = {
-        'id': group.id,
-        'name': group.name,
-        'creatorId': group.creatorId,
-        'createdAt': group.createdAt.toIso8601String(),
-        'status': group.status.toString(),
-        'sessionKey': {
-          'key': group.sessionKey.key,
-          'createdAt': group.sessionKey.createdAt.toIso8601String(),
-          'expiresAt': group.sessionKey.expiresAt.toIso8601String(),
-          'version': group.sessionKey.version,
-        },
-        'members': group.members
-            .map(
-              (member) => {
-                'id': member.id,
-                'userId': member.userId,
-                'name': member.name,
-                'publicKey': member.publicKey,
-                'joinedAt': member.joinedAt.toIso8601String(),
-                'lastSeen': member.lastSeen.toIso8601String(),
-                'role': member.role.toString(),
-                'status': member.status.toString(),
-              },
-            )
-            .toList(),
-      };
-
-      print('群组信息获取成功: ${group.name} (${group.members.length} 个成员)');
-      return groupInfo;
-    } catch (e) {
-      print('获取群组信息失败: $e');
-      return null;
-    }
-  }
-
-  /// 处理群组更新消息
-  static void _handleGroupUpdateMessage(
-    Map<String, dynamic> message,
-    WebSocket webSocket,
-  ) {
-    final groupId = message['groupId'];
-    print('收到群组更新消息: $groupId');
-
-    // 处理群组更新逻辑
-    if (onGroupUpdated != null) {
-      onGroupUpdated!(groupId);
-    }
-  }
-
-  /// 获取服务器地址信息（支持模拟器环境）
-  static Future<Map<String, dynamic>> getServerInfo() async {
-    final ip = await getLocalIP();
-    print('服务器信息: $ip:$_port');
-
-    return {'ip': ip, 'port': _port};
-  }
-
-  /// 检查服务器是否正在运行
-  static bool isServerRunning() {
-    return _server != null;
-  }
-
-  /// 获取服务器监听信息
-  static Map<String, dynamic> getServerStatus() {
-    if (_server == null) {
-      return {'running': false, 'port': null, 'address': null};
-    }
-
-    return {
-      'running': true,
-      'port': _port,
-      'address': _server!.address.address,
-      'connections': _connections.length,
-      'activeConnections': _connections.values
-          .map(
-            (conn) => {
-              'userId': conn.userId,
-              'groupId': conn.groupId,
-              'lastHeartbeat': conn.lastHeartbeat.toIso8601String(),
-            },
-          )
-          .toList(),
-    };
-  }
-
-  /// 断开所有连接
-  static void disconnect() {
-    print('断开所有P2P连接');
-    for (var connection in _connections.values) {
-      connection.webSocket.close();
-    }
-    _connections.clear();
-    _lastHeartbeat.clear();
-
-    for (var timer in _connectionTimers.values) {
-      timer.cancel();
-    }
-    _connectionTimers.clear();
-
-    // 清理重连计数
-    _reconnectAttempts.clear();
-    print('重连计数已清理');
-  }
-
-  /// 测试P2P服务器连接
-  static Future<bool> testConnection(String serverIP, int port) async {
-    print('开始P2P连接测试...');
-    print('目标服务器: $serverIP:$port');
-
-    // 在模拟器环境中进行IP转换
-    String targetIP = serverIP;
-    int targetPort = port;
-
-    // 如果目标IP是模拟器A的IP (10.0.2.15)，转换为主机地址和端口转发端口
-    if (serverIP == '10.0.2.15') {
-      print('检测到目标服务器是模拟器A，转换连接地址');
-      print('原始地址: $serverIP:$port');
-      targetIP = '10.0.2.2';
-      targetPort = 8081; // 端口转发端口
-      print('转换后地址: $targetIP:$targetPort');
-    }
-
-    // 先进行普通的TCP端口连接测试
-    print('=== 开始TCP端口连接测试 ===');
-    final tcpTestResult = await _testTcpConnection(targetIP, targetPort);
-    if (!tcpTestResult) {
-      print('TCP端口连接测试失败，无法进行WebSocket连接');
-      return false;
-    }
-    print('TCP端口连接测试成功，开始WebSocket连接测试');
-
-    // 然后进行WebSocket连接测试
-    print('=== 开始WebSocket连接测试 ===');
-    final testIPs = [targetIP];
-
-    // 如果是localhost，也尝试127.0.0.1
-    if (targetIP == 'localhost') {
-      testIPs.add('127.0.0.1');
-    }
-
-    print('将尝试以下IP地址进行WebSocket连接: $testIPs');
-
-    for (final ip in testIPs) {
-      try {
-        print('测试WebSocket连接到: $ip:$targetPort');
-        print('端口类型: ${targetPort.runtimeType}');
-        final uri = Uri.parse('ws://$ip:$targetPort');
-        print('WebSocket URI: $uri');
-
-        print('尝试建立WebSocket连接...');
-        final webSocket = await WebSocket.connect(uri.toString());
-        print('WebSocket连接建立成功');
-
-        print('关闭测试连接...');
-        webSocket.close();
-        print('WebSocket连接测试成功: $ip:$targetPort');
-        return true;
-      } catch (e) {
-        print('WebSocket连接测试失败 ($ip:$targetPort): $e');
-        if (e.toString().contains('Connection refused')) {
-          print('WebSocket连接被拒绝，可能的原因：');
-          print('1. P2P服务器未启动');
-          print('2. 端口号不正确');
-          print('3. 防火墙阻止连接');
-          print('4. 网络配置问题');
-          print('5. 服务器不支持WebSocket协议');
-          if (targetIP == '10.0.2.2' && targetPort == 8080) {
-            print('6. 模拟器端口转发未设置');
-            print('   请运行: adb -s emulator-5554 forward tcp:8080 tcp:36324');
-          }
-        } else if (e.toString().contains('timeout')) {
-          print('WebSocket连接超时，可能的原因：');
-          print('1. 网络延迟过高');
-          print('2. 服务器响应慢');
-          print('3. 网络不稳定');
-        }
-      }
-    }
-
-    print('所有WebSocket连接测试都失败了');
-    print('建议检查：');
-    print('1. 群组创建者是否已启动P2P服务器');
-    print('2. 服务器IP地址是否正确');
-    print('3. 端口号是否正确');
-    print('4. 网络连接是否正常');
-    print('5. 防火墙设置');
-    print('6. 服务器是否支持WebSocket协议');
-    if (targetIP == '10.0.2.2' && targetPort == 8080) {
-      print('7. 模拟器端口转发设置');
-      print('   群组创建者: adb -s emulator-5554 forward tcp:8080 tcp:36324');
-    }
-    return false;
-  }
-
-  /// 测试TCP端口连接
-  static Future<bool> _testTcpConnection(String ip, int port) async {
-    try {
-      print('测试TCP连接到: $ip:$port');
-      final socket = await Socket.connect(
-        ip,
-        port,
-        timeout: Duration(seconds: 5),
+    // 检查群组是否还有其他连接
+    if (connection.groupId.isNotEmpty) {
+      final remainingConnections = ConnectionManager.getConnectionsByGroup(
+        connection.groupId,
       );
-      print('TCP连接成功: $ip:$port');
-      socket.destroy();
-      return true;
-    } catch (e) {
-      print('TCP连接失败 ($ip:$port): $e');
-      if (e.toString().contains('Connection refused')) {
-        print('TCP连接被拒绝，可能的原因：');
-        print('1. 目标端口没有服务监听');
-        print('2. 端口号不正确');
-        print('3. 防火墙阻止连接');
-        print('4. 网络配置问题');
-        if (ip == '10.0.2.2' && port == 8080) {
-          print('5. 模拟器端口转发未设置');
-          print('   请运行: adb -s emulator-5554 forward tcp:8080 tcp:36324');
-        }
-      } else if (e.toString().contains('timeout')) {
-        print('TCP连接超时，可能的原因：');
-        print('1. 网络延迟过高');
-        print('2. 目标主机无响应');
-        print('3. 网络不稳定');
-      }
-      return false;
+      print('群组 ${connection.groupId} 剩余连接数: ${remainingConnections.length}');
     }
   }
 
-  /// 测试端口号解析
-  static void testPortParsing(String portStr) {
-    try {
-      final port = int.parse(portStr);
-      print('端口解析成功: $port (类型: ${port.runtimeType})');
-    } catch (e) {
-      print('端口解析失败: $e');
+  /// 广播消息
+  static void broadcastMessage(Map<String, dynamic> message) {
+    final groupId = message['groupId'];
+    if (groupId != null && groupId.isNotEmpty) {
+      MessageRouter.broadcastToGroup(groupId, message);
+    } else {
+      print('消息缺少groupId字段或groupId为空，无法广播');
     }
   }
 
-  /// 设置群组状态为不可用
-  static void _setGroupUnavailable(String groupId) async {
-    try {
-      print('设置群组状态为不可用: $groupId');
+  /// 发送消息给指定用户
+  static void sendToUser(
+    String userId,
+    String groupId,
+    Map<String, dynamic> message,
+  ) {
+    MessageRouter.sendToUser(userId, groupId, message);
+  }
 
-      // 获取群组服务实例
-      final groupService = GroupService();
+  /// 获取连接
+  static P2PConnection? getConnection(String connectionId) {
+    return ConnectionManager.getConnection(connectionId);
+  }
 
-      // 加载群组
-      final group = await groupService.getGroup(groupId);
-      if (group != null) {
-        // 设置群组状态为不可用
-        final success = await groupService.setGroupUnavailable(group);
-        if (success) {
-          print('群组 $groupId 状态已设置为不可用');
-        } else {
-          print('设置群组 $groupId 状态失败');
-        }
-      } else {
-        print('未找到群组: $groupId');
-      }
-    } catch (e) {
-      print('设置群组状态失败: $e');
-    }
+  /// 获取群组连接
+  static List<P2PConnection> getConnectionsByGroup(String groupId) {
+    return ConnectionManager.getConnectionsByGroup(groupId);
   }
 
   /// 移除连接
-  static void _removeConnection(String connectionId) {
-    final connection = _connections[connectionId];
-    if (connection != null) {
-      print(
-        '移除连接: $connectionId (用户: ${connection.userId}, 群组: ${connection.groupId})',
-      );
-      _connections.remove(connectionId);
-      _lastHeartbeat.remove(connectionId);
-      _connectionTimers[connectionId]?.cancel();
-      _connectionTimers.remove(connectionId);
-    }
+  static void removeConnection(String connectionId) {
+    ConnectionManager.removeConnection(connectionId);
   }
 
-  /// 处理身份验证消息
-  static void _handleAuthMessage(
-    Map<String, dynamic> data,
-    WebSocket webSocket,
-  ) async {
-    final userId = data['userId'] as String;
-    final groupId = data['groupId'] as String;
-    final connectionId = data['connectionId'] as String; // 使用客户端传递的连接ID
-    final isNewMember = data['isNewMember'] as bool? ?? false;
-    final timestamp = data['timestamp'] as int;
+  /// 获取所有连接
+  static Map<String, P2PConnection> getConnections() {
+    return ConnectionManager.getConnections();
+  }
 
-    print(
-      '收到身份验证消息: 用户=$userId, 群组=$groupId, 连接ID=$connectionId, 是否新成员=$isNewMember',
-    );
+  /// 获取连接数量
+  static int getConnectionCount() {
+    return ConnectionManager.getConnectionCount();
+  }
 
-    // 检查是否已存在相同用户的连接
-    final existingConnection = _connections.values
-        .where((conn) => conn.userId == userId && conn.groupId == groupId)
-        .firstOrNull;
+  /// 获取服务器信息
+  static Future<Map<String, dynamic>> getServerInfo() async {
+    final serverIP = await getLocalIP();
+    final groupConnections = ConnectionManager.getGroupConnections();
 
-    if (existingConnection != null) {
-      print('已存在相同用户的连接，关闭旧连接: ${existingConnection.connectionId}');
-      existingConnection.webSocket.close();
-      _removeConnection(existingConnection.connectionId);
-    }
-
-    // 验证连接
-    bool isValid = true;
-    String failureReason = '';
-    if (onConnectionValidate != null) {
-      try {
-        isValid = await onConnectionValidate!(userId, groupId, isNewMember);
-        print('连接验证结果: $isValid');
-        if (!isValid) {
-          failureReason = '用户不是群组成员或群组状态无效';
-        }
-      } catch (e) {
-        print('连接验证异常: $e');
-        isValid = false;
-        failureReason = '验证过程发生异常: $e';
-      }
-    }
-
-    if (!isValid) {
-      print('连接验证失败，发送认证失败响应: $connectionId');
-      print('失败原因: $failureReason');
-
-      // 发送认证失败响应，而不是主动断开连接
-      final failureResponse = {
-        'type': 'auth_failure',
-        'connectionId': connectionId,
-        'userId': userId,
-        'groupId': groupId,
-        'reason': failureReason,
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-      };
-
-      try {
-        webSocket.add(jsonEncode(failureResponse));
-        print('认证失败响应已发送，等待客户端断开连接');
-      } catch (e) {
-        print('发送认证失败响应失败: $e');
-        // 如果发送失败，才主动断开连接
-        webSocket.close();
-      }
-      return;
-    }
-
-    // 创建连接对象
-    final connection = P2PConnection(
-      webSocket: webSocket,
-      userId: userId,
-      groupId: groupId,
-      connectionId: connectionId, // 使用客户端传递的连接ID
-    );
-
-    _connections[connectionId] = connection;
-    _lastHeartbeat[connectionId] = DateTime.now();
-
-    print('P2P连接建立成功: $connectionId (用户: $userId, 群组: $groupId)');
-
-    // 发送验证成功响应
-    final response = {
-      'type': 'auth_success',
-      'connectionId': connectionId,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    return {
+      'ip': serverIP,
+      'port': _port,
+      'isRunning': _isRunning,
+      'connectionCount': getConnectionCount(),
+      'startTime': _startTime?.millisecondsSinceEpoch,
+      'groupConnections': groupConnections,
     };
-    webSocket.add(jsonEncode(response));
-
-    // 如果是新成员，发送群组信息
-    if (isNewMember) {
-      print('新成员连接，准备发送群组信息');
-      // 这里会由GroupService处理群组信息发送
-    }
-
-    // 启动心跳检测
-    _startHeartbeatCheck();
   }
 
-  /// 处理聊天消息
-  static void _handleChatMessage(
-    Map<String, dynamic> message,
-    WebSocket webSocket,
-  ) {
-    // 转发消息给其他客户端
-    final messageStr = jsonEncode(message);
-    for (var entry in _connections.entries) {
-      final connection = entry.value;
-      if (connection.webSocket != webSocket) {
-        try {
-          print('转发消息到: ${entry.key} (用户: ${connection.userId})');
-          connection.webSocket.add(messageStr);
-        } catch (e) {
-          print('转发消息失败: $e');
-          _removeConnection(entry.key);
-        }
-      }
-    }
+  /// 获取服务器状态
+  static Map<String, dynamic> getServerStatus() {
+    final groupConnections = ConnectionManager.getGroupConnections();
 
-    // 通知本地应用
-    if (onMessageReceived != null) {
-      onMessageReceived!(message);
-    }
+    return {
+      'isRunning': _isRunning,
+      'port': _port,
+      'connectionCount': getConnectionCount(),
+      'groupConnections': groupConnections,
+      'startTime': _startTime?.millisecondsSinceEpoch,
+    };
   }
 
-  /// 处理成员加入消息
-  static void _handleMemberJoinMessage(
-    Map<String, dynamic> message,
-    WebSocket webSocket,
-  ) {
-    print('收到成员加入消息: $message');
+  /// 测试连接
+  static Future<bool> testConnection(String targetIP, int port) async {
+    return NetworkUtils.testConnection(targetIP, port);
+  }
 
-    // 转发消息给GroupService处理
-    if (onMessage != null) {
-      onMessage!(message);
-    }
+  /// 网络连通性测试
+  static Future<bool> pingTest(String targetIP) async {
+    return NetworkUtils.pingTest(targetIP);
+  }
+
+  /// 生成连接ID
+  static String _generateConnectionId() {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final random = Random().nextInt(10000);
+    return 'conn_${timestamp}_$random';
   }
 }
