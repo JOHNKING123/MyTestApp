@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:path/path.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/group.dart';
 import '../models/user.dart';
@@ -14,10 +16,17 @@ import 'dart:io' show Platform;
 class StorageService {
   // --- 统一接口 ---
   static Future<bool> saveUser(User user) async {
+    print(
+      '[存储] 开始保存用户: id=${user.id}, name=${user.name}, deviceId=${user.deviceId}',
+    );
     if (kIsWeb) {
-      return StorageServiceHive.saveUser(user);
+      final result = await StorageServiceHive.saveUser(user);
+      print('[存储] Web端保存用户结果: $result');
+      return result;
     } else {
-      return _saveUserNative(user);
+      final result = await _saveUserNative(user);
+      print('[存储] Native端保存用户结果: $result');
+      return result;
     }
   }
 
@@ -26,6 +35,20 @@ class StorageService {
       return StorageServiceHive.loadUser(userId);
     } else {
       return _loadUserNative(userId);
+    }
+  }
+
+  /// 根据设备ID查找用户
+  static Future<User?> loadUserByDeviceId(String deviceId) async {
+    print('[存储] 开始根据设备ID查找用户: deviceId=$deviceId');
+    if (kIsWeb) {
+      final user = await StorageServiceHive.loadUserByDeviceId(deviceId);
+      print('[存储] Web端查找用户结果: ${user != null ? "找到" : "未找到"}');
+      return user;
+    } else {
+      final user = await _loadUserByDeviceIdNative(deviceId);
+      print('[存储] Native端查找用户结果: ${user != null ? "找到" : "未找到"}');
+      return user;
     }
   }
 
@@ -54,6 +77,7 @@ class StorageService {
   }
 
   static Future<bool> saveMessage(String groupId, Message message) async {
+    print('kIsWeb: $kIsWeb');
     if (kIsWeb) {
       return StorageServiceHive.saveMessage(groupId, message);
     } else {
@@ -85,6 +109,24 @@ class StorageService {
     }
   }
 
+  /// 删除指定群组
+  static Future<bool> deleteGroup(String groupId) async {
+    if (kIsWeb) {
+      return StorageServiceHive.deleteGroup(groupId);
+    } else {
+      return _deleteGroupNative(groupId);
+    }
+  }
+
+  /// 删除指定群组的所有消息
+  static Future<bool> deleteGroupMessages(String groupId) async {
+    if (kIsWeb) {
+      return StorageServiceHive.deleteGroupMessages(groupId);
+    } else {
+      return _deleteGroupMessagesNative(groupId);
+    }
+  }
+
   static Future<List<Message>> searchMessages(
     String groupId,
     String query,
@@ -93,6 +135,52 @@ class StorageService {
       return StorageServiceHive.searchMessages(groupId, query);
     } else {
       return _searchMessagesNative(groupId, query);
+    }
+  }
+
+  /// 删除所有数据（注销时使用）
+  static Future<bool> clearAllData() async {
+    if (kIsWeb) {
+      return StorageServiceHive.clearAllData();
+    } else {
+      return _clearAllDataNative();
+    }
+  }
+
+  /// 重置数据库（删除数据库文件重新创建）
+  static Future<bool> resetDatabase() async {
+    try {
+      print('[存储] 开始重置数据库...');
+      if (kIsWeb) {
+        // Web端清除所有Hive数据
+        await StorageServiceHive.clearAllData();
+        print('[存储] Web端数据库重置完成');
+        return true;
+      } else {
+        // Native端删除数据库文件
+        final path = join(await getDatabasesPath(), 'secure_chat.db');
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+          print('[存储] 删除数据库文件: $path');
+        }
+        // 重新初始化数据库
+        await database;
+        print('[存储] Native端数据库重置完成');
+        return true;
+      }
+    } catch (e) {
+      print('[存储] 重置数据库失败: $e');
+      return false;
+    }
+  }
+
+  /// 只删除群组和消息数据，保留用户数据
+  static Future<bool> clearGroupsAndMessages() async {
+    if (kIsWeb) {
+      return StorageServiceHive.clearGroupsAndMessages();
+    } else {
+      return _clearGroupsAndMessagesNative();
     }
   }
 
@@ -190,22 +278,24 @@ class StorageService {
     ''');
   }
 
-  /// 保存用户
+  /// 保存用户（Native实现）
   static Future<bool> _saveUserNative(User user) async {
     try {
+      print('[Native] 开始保存用户到SQLite: id=${user.id}, deviceId=${user.deviceId}');
       final db = await database;
       await db.insert('users', {
         'id': user.id,
         'name': user.name,
+        'deviceId': user.deviceId,
         'profile': jsonEncode(user.profile.toJson()),
         'createdAt': user.createdAt.toIso8601String(),
         'status': user.status.toString().split('.').last,
         'lastActiveAt': user.lastActiveAt.toIso8601String(),
-        'deviceId': user.deviceId,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
+      print('[Native] 用户保存到SQLite成功');
       return true;
     } catch (e) {
-      print('Failed to save user: $e');
+      print('[Native] 保存用户到SQLite失败: $e');
       return false;
     }
   }
@@ -239,6 +329,45 @@ class StorageService {
       );
     } catch (e) {
       print('Failed to load user: $e');
+      return null;
+    }
+  }
+
+  /// 根据设备ID加载用户（Native实现）
+  static Future<User?> _loadUserByDeviceIdNative(String deviceId) async {
+    try {
+      print('[Native] 开始从SQLite查找用户: deviceId=$deviceId');
+      final db = await database;
+      final maps = await db.query(
+        'users',
+        where: 'deviceId = ?',
+        whereArgs: [deviceId],
+      );
+      print('[Native] SQLite查询结果: ${maps.length} 条记录');
+
+      if (maps.isNotEmpty) {
+        final map = maps.first;
+        final profileJson = jsonDecode(map['profile'] as String);
+        final user = User(
+          id: map['id'] as String,
+          name: map['name'] as String,
+          profile: UserProfile.fromJson(profileJson),
+          createdAt: DateTime.parse(map['createdAt'] as String),
+          status: UserStatus.values.firstWhere(
+            (e) => e.toString() == 'UserStatus.${map['status']}',
+            orElse: () => UserStatus.active,
+          ),
+          lastActiveAt: DateTime.parse(map['lastActiveAt'] as String),
+          deviceId: map['deviceId'] as String,
+        );
+        print('[Native] 成功解析用户: id=${user.id}, name=${user.name}');
+        return user;
+      } else {
+        print('[Native] 未找到用户记录');
+        return null;
+      }
+    } catch (e) {
+      print('[Native] 从SQLite加载用户失败: $e');
       return null;
     }
   }
@@ -443,7 +572,7 @@ class StorageService {
         'messages',
         where: 'groupId = ?',
         whereArgs: [groupId],
-        orderBy: 'timestamp DESC',
+        orderBy: 'timestamp ASC',
         limit: limit,
         offset: offset,
       );
@@ -556,6 +685,71 @@ class StorageService {
     } catch (e) {
       print('Failed to search messages: $e');
       return [];
+    }
+  }
+
+  /// 删除所有数据（注销时使用）
+  static Future<bool> _clearAllDataNative() async {
+    try {
+      final db = await database;
+      await db.delete('users');
+      await db.delete('groups');
+      await db.delete('members');
+      await db.delete('messages');
+      return true;
+    } catch (e) {
+      print('Failed to clear all data: $e');
+      return false;
+    }
+  }
+
+  /// 只删除群组和消息数据，保留用户数据
+  static Future<bool> _clearGroupsAndMessagesNative() async {
+    try {
+      final db = await database;
+      await db.delete('groups');
+      await db.delete('members');
+      await db.delete('messages');
+      return true;
+    } catch (e) {
+      print('Failed to clear groups and messages: $e');
+      return false;
+    }
+  }
+
+  /// 删除指定群组（Native实现）
+  static Future<bool> _deleteGroupNative(String groupId) async {
+    try {
+      print('[Native] 开始删除群组: $groupId');
+      final db = await database;
+
+      // 删除群组
+      await db.delete('groups', where: 'id = ?', whereArgs: [groupId]);
+
+      // 删除群组成员
+      await db.delete('members', where: 'groupId = ?', whereArgs: [groupId]);
+
+      print('[Native] 群组删除成功: $groupId');
+      return true;
+    } catch (e) {
+      print('[Native] 删除群组失败: $e');
+      return false;
+    }
+  }
+
+  /// 删除指定群组的所有消息（Native实现）
+  static Future<bool> _deleteGroupMessagesNative(String groupId) async {
+    try {
+      print('[Native] 开始删除群组消息: $groupId');
+      final db = await database;
+
+      await db.delete('messages', where: 'groupId = ?', whereArgs: [groupId]);
+
+      print('[Native] 群组消息删除成功: $groupId');
+      return true;
+    } catch (e) {
+      print('[Native] 删除群组消息失败: $e');
+      return false;
     }
   }
 }

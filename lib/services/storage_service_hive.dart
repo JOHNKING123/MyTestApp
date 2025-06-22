@@ -21,18 +21,51 @@ class StorageServiceHive {
     _initialized = true;
   }
 
-  // 用户
+  /// 保存用户
   static Future<bool> saveUser(User user) async {
-    await initialize();
-    await _userBox.put(user.id, jsonEncode(user.toJson()));
-    return true;
+    try {
+      print('[Hive] 开始保存用户到Hive: id=${user.id}, deviceId=${user.deviceId}');
+      await _userBox.put(user.deviceId, user.toJson());
+      print('[Hive] 用户保存到Hive成功');
+      return true;
+    } catch (e) {
+      print('[Hive] 保存用户到Hive失败: $e');
+      return false;
+    }
   }
 
+  /// 加载用户
   static Future<User?> loadUser(String userId) async {
-    await initialize();
-    final data = _userBox.get(userId);
-    if (data == null) return null;
-    return User.fromJson(jsonDecode(data));
+    try {
+      await initialize();
+      final userJson = _userBox.get(userId);
+      if (userJson == null) return null;
+      return User.fromJson(jsonDecode(userJson));
+    } catch (e) {
+      print('加载用户失败: $e');
+      return null;
+    }
+  }
+
+  /// 根据设备ID加载用户
+  static Future<User?> loadUserByDeviceId(String deviceId) async {
+    try {
+      print('[Hive] 开始从Hive查找用户: deviceId=$deviceId');
+      final userData = _userBox.get(deviceId);
+      print('[Hive] 从Hive获取的用户数据: $userData');
+
+      if (userData != null) {
+        final user = User.fromJson(Map<String, dynamic>.from(userData));
+        print('[Hive] 成功解析用户: id=${user.id}, name=${user.name}');
+        return user;
+      } else {
+        print('[Hive] 未找到用户数据');
+        return null;
+      }
+    } catch (e) {
+      print('[Hive] 从Hive加载用户失败: $e');
+      return null;
+    }
   }
 
   // 群组
@@ -53,6 +86,47 @@ class StorageServiceHive {
   static Future<List<Group>> loadAllGroups() async {
     await initialize();
     return _groupBox.values.map((e) => Group.fromJson(jsonDecode(e))).toList();
+  }
+
+  /// 删除指定群组
+  static Future<bool> deleteGroup(String groupId) async {
+    try {
+      print('[Hive] 开始删除群组: $groupId');
+      await initialize();
+      await _groupBox.delete(groupId);
+      print('[Hive] 群组删除成功: $groupId');
+      return true;
+    } catch (e) {
+      print('[Hive] 删除群组失败: $e');
+      return false;
+    }
+  }
+
+  /// 删除指定群组的所有消息
+  static Future<bool> deleteGroupMessages(String groupId) async {
+    try {
+      print('[Hive] 开始删除群组消息: $groupId');
+      await initialize();
+
+      // 获取所有消息键
+      final keysToDelete = <String>[];
+      for (final key in _messageBox.keys) {
+        if (key.toString().startsWith('${groupId}_')) {
+          keysToDelete.add(key.toString());
+        }
+      }
+
+      // 删除所有相关消息
+      for (final key in keysToDelete) {
+        await _messageBox.delete(key);
+      }
+
+      print('[Hive] 群组消息删除成功: $groupId (删除了 ${keysToDelete.length} 条消息)');
+      return true;
+    } catch (e) {
+      print('[Hive] 删除群组消息失败: $e');
+      return false;
+    }
   }
 
   // 消息
@@ -84,16 +158,50 @@ class StorageServiceHive {
     return true;
   }
 
+  /// 搜索消息
   static Future<List<Message>> searchMessages(
     String groupId,
     String query,
   ) async {
-    await initialize();
-    final messages = _messageBox.values
-        .map((e) => Message.fromJson(jsonDecode(e)))
-        .where((m) => m.groupId == groupId && m.content.text.contains(query))
-        .toList();
-    messages.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-    return messages;
+    try {
+      final messages = await loadMessages(groupId);
+      return messages
+          .where(
+            (message) => message.content.text.toLowerCase().contains(
+              query.toLowerCase(),
+            ),
+          )
+          .toList();
+    } catch (e) {
+      print('搜索消息失败: $e');
+      return [];
+    }
+  }
+
+  /// 删除所有数据（注销时使用）
+  static Future<bool> clearAllData() async {
+    try {
+      await _userBox.clear();
+      await _groupBox.clear();
+      await _messageBox.clear();
+      print('已清空所有Hive数据');
+      return true;
+    } catch (e) {
+      print('清空Hive数据失败: $e');
+      return false;
+    }
+  }
+
+  /// 只删除群组和消息数据，保留用户数据
+  static Future<bool> clearGroupsAndMessages() async {
+    try {
+      await _groupBox.clear();
+      await _messageBox.clear();
+      print('已清空群组和消息数据，保留用户数据');
+      return true;
+    } catch (e) {
+      print('清空群组和消息数据失败: $e');
+      return false;
+    }
   }
 }

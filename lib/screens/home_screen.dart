@@ -15,10 +15,10 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // 初始化应用
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<AppProvider>().initialize();
-    });
+    // 移除重复的初始化调用，因为main.dart中已经调用了initialize
+    // WidgetsBinding.instance.addPostFrameCallback((_) {
+    //   context.read<AppProvider>().initialize();
+    // });
   }
 
   @override

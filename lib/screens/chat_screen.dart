@@ -5,6 +5,7 @@ import '../models/message.dart';
 import '../providers/app_provider.dart';
 import '../screens/group_qr_screen.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import '../services/group_service.dart';
 
 class ChatScreen extends StatefulWidget {
   final Group group;
@@ -58,6 +59,28 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
+          // 群组状态提示
+          if (widget.group.status == GroupStatus.unavailable)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              color: Colors.red.shade50,
+              child: Row(
+                children: [
+                  Icon(Icons.warning, color: Colors.red.shade700, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '群组不可用，可能已被删除或服务器不可用',
+                      style: TextStyle(
+                        color: Colors.red.shade700,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             child: Consumer<AppProvider>(
               builder: (context, appProvider, child) {
@@ -107,7 +130,49 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
           ),
-          _buildMessageInput(),
+          // 只在群组可用时显示消息输入
+          if (widget.group.status == GroupStatus.active)
+            _buildMessageInput()
+          else
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.grey.withOpacity(0.2),
+                    spreadRadius: 1,
+                    blurRadius: 3,
+                    offset: const Offset(0, -1),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      enabled: false,
+                      decoration: InputDecoration(
+                        hintText: '群组不可用，无法发送消息',
+                        border: const OutlineInputBorder(),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        filled: true,
+                        fillColor: Colors.grey.shade200,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.send),
+                    onPressed: null,
+                    color: Colors.grey,
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
@@ -148,7 +213,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 children: [
                   if (!isMe)
                     Text(
-                      message.senderId,
+                      message.metadata['senderName'] ?? message.senderId,
                       style: TextStyle(
                         fontSize: 12,
                         color: isMe ? Colors.white70 : Colors.grey[600],
@@ -250,6 +315,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _showGroupInfo() {
+    final appProvider = context.read<AppProvider>();
+    final isCreator = widget.group.creatorId == appProvider.currentUser?.id;
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -262,6 +330,23 @@ class _ChatScreenState extends State<ChatScreen> {
             Text('创建者: ${widget.group.creatorId}'),
             Text('成员数: ${widget.group.memberCount}'),
             Text('创建时间: ${_formatTime(widget.group.createdAt)}'),
+            if (isCreator)
+              Container(
+                margin: const EdgeInsets.only(top: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.orange,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text(
+                  '群组创建者',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
             const SizedBox(height: 16),
             Row(
               children: [
@@ -277,6 +362,41 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ],
             ),
+            const SizedBox(height: 8),
+            if (isCreator)
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.delete_forever, color: Colors.white),
+                  label: const Text(
+                    '解散群组',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _disbandGroup();
+                  },
+                ),
+              )
+            else
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.exit_to_app, color: Colors.white),
+                  label: const Text(
+                    '离开群组',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange,
+                  ),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _leaveGroup();
+                  },
+                ),
+              ),
           ],
         ),
         actions: [
@@ -289,7 +409,21 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _showGroupQRCode() {
+  void _showGroupQRCode() async {
+    // 如果是群组创建者，确保P2P服务器正在运行
+    final appProvider = context.read<AppProvider>();
+    if (widget.group.creatorId == appProvider.currentUser?.id) {
+      final success = await GroupService().ensureGroupServerRunning(
+        widget.group,
+      );
+      if (!success) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('启动P2P服务器失败，无法显示二维码')));
+        return;
+      }
+    }
+
     showModalBottomSheet(
       context: context,
       builder: (context) => Container(
@@ -353,6 +487,36 @@ class _ChatScreenState extends State<ChatScreen> {
       return '${difference.inMinutes}分钟前';
     } else {
       return '刚刚';
+    }
+  }
+
+  Future<void> _leaveGroup() async {
+    final appProvider = context.read<AppProvider>();
+    final success = await appProvider.leaveGroup(widget.group);
+    if (success) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('成功离开群组')));
+      Navigator.pop(context); // 返回群组列表
+    } else {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(appProvider.error ?? '离开群组失败')));
+    }
+  }
+
+  Future<void> _disbandGroup() async {
+    final appProvider = context.read<AppProvider>();
+    final success = await appProvider.disbandGroup(widget.group);
+    if (success) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('成功解散群组')));
+      Navigator.pop(context); // 返回群组列表
+    } else {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(appProvider.error ?? '解散群组失败')));
     }
   }
 }

@@ -55,7 +55,7 @@ class Group {
   }
 
   int get memberCount => members.length;
-  bool isMember(String memberId) => members.any((m) => m.id == memberId);
+  bool isMember(String memberId) => members.any((m) => m.userId == memberId);
 }
 
 @JsonSerializable()
@@ -122,6 +122,6 @@ class GroupSettings {
   Map<String, dynamic> toJson() => _$GroupSettingsToJson(this);
 }
 
-enum GroupStatus { active, inactive, disbanded }
+enum GroupStatus { active, inactive, disbanded, unavailable }
 
 enum KeyAlgorithm { rsa, ecdsa, ed25519 }

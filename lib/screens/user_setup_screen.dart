@@ -113,7 +113,10 @@ class _UserSetupScreenState extends State<UserSetupScreen> {
   void _createUser() async {
     if (_formKey.currentState!.validate()) {
       final appProvider = context.read<AppProvider>();
-      final success = await appProvider.setupUser(_nameController.text.trim());
+      final success = await appProvider.setupUser(
+        _nameController.text.trim(),
+        _nicknameController.text.trim(),
+      );
 
       if (success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
