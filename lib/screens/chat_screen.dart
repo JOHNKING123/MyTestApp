@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/group.dart';
 import '../models/message.dart';
+import '../models/member.dart';
 import '../providers/app_provider.dart';
 import '../screens/group_qr_screen.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -221,13 +222,41 @@ class _ChatScreenState extends State<ChatScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   if (!isMe)
-                    Text(
-                      message.metadata['senderName'] ?? message.senderId,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: isMe ? Colors.white70 : Colors.grey[600],
-                        fontWeight: FontWeight.bold,
-                      ),
+                    Builder(
+                      builder: (context) {
+                        final appProvider = context.read<AppProvider>();
+                        final group = appProvider.groups.firstWhere(
+                          (g) => g.id == widget.group.id,
+                          orElse: () => widget.group,
+                        );
+                        final member = group.members.firstWhere(
+                          (m) => m.userId == message.senderId,
+                          orElse: () => Member(
+                            id: '',
+                            userId: '',
+                            groupId: '',
+                            name: '',
+                            publicKey: '',
+                            joinedAt: DateTime.now(),
+                            lastSeen: DateTime.now(),
+                          ),
+                        );
+                        final displayName = member.userId.isEmpty
+                            ? message.senderId
+                            : (member.groupNickname?.isNotEmpty == true
+                                  ? member.groupNickname!
+                                  : (member.name.isNotEmpty
+                                        ? member.name
+                                        : member.userId));
+                        return Text(
+                          displayName,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isMe ? Colors.white70 : Colors.grey[600],
+                            fontWeight: FontWeight.bold,
+                          ),
+                        );
+                      },
                     ),
                   const SizedBox(height: 4),
                   Text(
@@ -343,7 +372,24 @@ class _ChatScreenState extends State<ChatScreen> {
                   (g) => g.id == widget.group.id,
                   orElse: () => widget.group,
                 );
-                return Text('成员数: ${group.memberCount}');
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('成员数: ${group.memberCount}'),
+                    const SizedBox(height: 4),
+                    ...group.members.map(
+                      (m) => Text(
+                        m.groupNickname?.isNotEmpty == true
+                            ? m.groupNickname!
+                            : (m.name.isNotEmpty ? m.name : m.userId),
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
               },
             ),
             Text('创建时间: ${_formatTime(widget.group.createdAt)}'),

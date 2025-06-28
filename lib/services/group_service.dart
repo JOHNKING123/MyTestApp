@@ -12,6 +12,7 @@ import '../services/encryption_service.dart';
 import '../utils/debug_logger.dart';
 import '../services/message_service.dart';
 import 'key_manager.dart';
+import '../providers/app_provider.dart';
 
 class GroupService {
   static final GroupService _instance = GroupService._internal();
@@ -101,7 +102,7 @@ class GroupService {
 
       // 设置消息处理回调
       P2PService.onMessageReceived = (message) {
-        _handleIncomingMessage(group, message);
+        _handleIncomingMessage(group, message, creatorId);
       };
 
       return group;
@@ -118,9 +119,9 @@ class GroupService {
       'type': 'group_join',
       'groupId': group.id,
       'groupName': group.name,
+      'groupPublicKey': group.groupKeys.publicKey,
       'serverIP': serverInfo['ip'],
       'serverPort': serverInfo['port'],
-      'sessionKey': group.sessionKey.key,
     };
 
     DebugLogger().info(
@@ -155,7 +156,7 @@ class GroupService {
 
       // 设置消息处理回调
       P2PService.onMessageReceived = (message) {
-        _handleIncomingMessage(group, message);
+        _handleIncomingMessage(group, message, group.creatorId);
       };
 
       // 监听连接事件
@@ -188,7 +189,7 @@ class GroupService {
 
         // 设置消息处理回调
         P2PService.onMessageReceived = (message) {
-          _handleIncomingMessage(group, message);
+          _handleIncomingMessage(group, message, group.creatorId);
         };
 
         // 监听连接事件
@@ -355,7 +356,7 @@ class GroupService {
 
         // 设置消息处理回调
         P2PService.onMessageReceived = (message) {
-          _handleIncomingMessage(group, message);
+          _handleIncomingMessage(group, message, userId);
         };
 
         return true;
@@ -444,6 +445,7 @@ class GroupService {
     String qrCodeData,
     String userId,
     String userName,
+    String publicKey,
   ) async {
     try {
       DebugLogger().info('开始加入群组...', tag: 'GROUP');
@@ -454,6 +456,7 @@ class GroupService {
       final groupId = qrData['groupId'];
       final serverIP = qrData['serverIP'];
       final serverPort = qrData['serverPort'];
+      final groupPublicKey = qrData['groupPublicKey'];
 
       DebugLogger().info(
         '解析结果: 群组ID=$groupId, 服务器=$serverIP:$serverPort',
@@ -482,25 +485,43 @@ class GroupService {
           DebugLogger().info('用户已经是群组成员，直接连接...', tag: 'GROUP');
           return await connectToGroupServer(group, userId);
         }
+        DebugLogger().error('群组已经存在，但用户不是群组成员', tag: 'GROUP');
+        return false;
       } else {
-        // 创建新群组对象（不保存本地，等群主广播group_update）
+        // 创建新群组对象（
         group = Group(
           id: groupId,
           name: qrData['groupName'],
           creatorId: 'unknown_creator', // 暂时设为未知，后续可以更新
           createdAt: DateTime.now(), // 暂时设为当前时间
           groupKeys: GroupKeyPair(
-            publicKey: 'temp_public_key',
+            publicKey: groupPublicKey,
             privateKey: 'temp_private_key',
             createdAt: DateTime.now(),
           ),
           sessionKey: SessionKey(
-            key: qrData['sessionKey'],
+            key: '',
             createdAt: DateTime.now(),
             expiresAt: DateTime.now().add(Duration(days: 30)),
             version: 1,
           ),
+          members: [
+            Member(
+              id: "",
+              userId: userId,
+              groupId: groupId,
+              name: userName,
+              publicKey: publicKey,
+              joinedAt: DateTime.now(),
+              lastSeen: DateTime.now(),
+              status: MemberStatus.inactive,
+            ),
+          ],
+          status: GroupStatus.inactive,
         );
+        // 保存群组
+        await StorageService.saveGroup(group);
+        DebugLogger().info('创建新群组成功', tag: 'GROUP');
       }
 
       // 连接到P2P服务器
@@ -517,7 +538,7 @@ class GroupService {
 
       // 设置消息处理回调
       P2PService.onMessageReceived = (message) {
-        _handleIncomingMessage(group!, message);
+        _handleIncomingMessage(group!, message, userId);
       };
 
       // 生成用户密钥对（改为用注册时密钥）
@@ -542,9 +563,6 @@ class GroupService {
         tag: 'GROUP',
       );
 
-      // 不在本地直接addMember/saveGroup，等群主端广播group_update后再同步
-
-      DebugLogger().info('等待群主端处理入群请求并同步群组数据...', tag: 'GROUP');
       return true;
     } catch (e) {
       DebugLogger().error('加入群组失败: $e', tag: 'GROUP');
@@ -661,7 +679,11 @@ class GroupService {
   }
 
   /// 处理接收到的消息
-  void _handleIncomingMessage(Group group, Map<String, dynamic> message) {
+  void _handleIncomingMessage(
+    Group group,
+    Map<String, dynamic> message,
+    String currentUserId,
+  ) {
     try {
       DebugLogger().info('处理接收消息: ${message['type']}', tag: 'GROUP');
       final messageType = message['type'];
@@ -677,11 +699,14 @@ class GroupService {
         case NetworkMessage.TYPE_JOIN_REQUEST:
           _handleJoinRequest(group, message);
           break;
+        case NetworkMessage.TYPE_JOIN_RESPONSE:
+          _handleJoinResponse(group, message);
+          break;
         case NetworkMessage.TYPE_MEMBER_JOINED:
           _handleMemberJoined(group, message);
           break;
         case NetworkMessage.TYPE_MEMBER_LEFT:
-          _handleMemberLeft(group, message);
+          _handleMemberLeft(group, message, currentUserId);
           break;
         case NetworkMessage.TYPE_GROUP_UPDATE:
           DebugLogger().info(
@@ -825,7 +850,8 @@ class GroupService {
       'type': NetworkMessage.TYPE_JOIN_RESPONSE,
       'messageId': _generateMessageId(),
       'groupId': groupId,
-      'senderId': 'system',
+      'senderId': group.creatorId,
+      'receiverId': userId,
       'content': {
         'success': success,
         'reason': reason,
@@ -876,12 +902,30 @@ class GroupService {
   }
 
   /// 处理成员离开消息
-  void _handleMemberLeft(Group group, Map<String, dynamic> message) {
+  void _handleMemberLeft(
+    Group group,
+    Map<String, dynamic> message,
+    String currentUserId,
+  ) {
     try {
       final content = message['content'];
       final userId = content['userId'];
       final name = content['name'];
-
+      // 如果userId为当前用户userId，则不处理
+      DebugLogger().info(
+        '处理成员离开消息: userId=$userId, currentUserId=$currentUserId',
+        tag: 'GROUP',
+      );
+      if (userId == currentUserId) {
+        DebugLogger().info(
+          '收到自己离开的member_left消息，忽略处理 userId=$userId, currentUserId=$currentUserId',
+          tag: 'GROUP',
+        );
+        return;
+      }
+      StorageService.removeMemberFromGroup(group.id, userId);
+      group.members.removeWhere((m) => m.userId == (userId));
+      StorageService.saveGroup(group);
       DebugLogger().info('成员离开: $name ($userId)', tag: 'GROUP');
 
       // 触发群组更新回调
@@ -925,18 +969,22 @@ class GroupService {
         return false;
       }
 
-      // 移除成员
-      group.members.remove(member);
+      // 移除所有成员，从db 删除所有group的member
+      StorageService.removeAllMembersFromGroup(groupId);
+      group.members.clear();
 
-      // 保存群组
-      await StorageService.saveGroup(group);
+      // 删除所有group的message
+      StorageService.removeAllMessagesFromGroup(groupId);
+
+      // 删除群组
+      await StorageService.deleteGroup(groupId);
 
       // 广播成员离开消息
       final message = {
         'type': NetworkMessage.TYPE_MEMBER_LEFT,
         'messageId': _generateMessageId(),
         'groupId': groupId,
-        'senderId': 'system',
+        'senderId': userId,
         'content': {
           'userId': userId,
           'name': member.name,
@@ -951,6 +999,65 @@ class GroupService {
       if (onGroupUpdated != null) {
         onGroupUpdated!(groupId);
       }
+
+      DebugLogger().info('成功离开群组', tag: 'GROUP');
+      return true;
+    } catch (e) {
+      DebugLogger().error('离开群组失败: $e', tag: 'GROUP');
+      return false;
+    }
+  }
+
+  /// 注销用户离开群组
+  Future<bool> leaveGroupForLogout(String groupId, String userId) async {
+    try {
+      DebugLogger().info('注销用户 $userId 离开群组 $groupId', tag: 'GROUP');
+
+      final group = await StorageService.loadGroup(groupId);
+      if (group == null) {
+        DebugLogger().error('群组不存在: $groupId', tag: 'GROUP');
+        return false;
+      }
+
+      // 查找成员
+      final member = group.members.firstWhere(
+        (m) => m.userId == userId,
+        orElse: () => Member(
+          id: '',
+          userId: '',
+          groupId: '',
+          name: '',
+          publicKey: '',
+          joinedAt: DateTime.now(),
+          lastSeen: DateTime.now(),
+          role: MemberRole.member,
+          status: MemberStatus.inactive,
+        ),
+      );
+
+      if (member.userId.isEmpty) {
+        DebugLogger().error('用户不是群组成员: $userId', tag: 'GROUP');
+        return false;
+      }
+
+      // 移除成员
+      group.members.remove(member);
+
+      // 广播成员离开消息
+      final message = {
+        'type': NetworkMessage.TYPE_MEMBER_LEFT,
+        'messageId': _generateMessageId(),
+        'groupId': groupId,
+        'senderId': userId,
+        'content': {
+          'userId': userId,
+          'name': member.name,
+          'leftAt': DateTime.now().millisecondsSinceEpoch,
+        },
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
+
+      P2PService.broadcastMessage(message);
 
       DebugLogger().info('成功离开群组', tag: 'GROUP');
       return true;
@@ -1116,6 +1223,75 @@ class GroupService {
       _debugPrintAllGroups();
     } catch (e) {
       DebugLogger().error('处理群组更新消息失败: $e', tag: 'GROUP');
+    }
+  }
+
+  /// 处理join_response消息
+  void _handleJoinResponse(Group group, Map<String, dynamic> message) async {
+    try {
+      DebugLogger().info('[GROUP] 处理join_response: $message', tag: 'GROUP');
+      // 循环打印group的members的信息
+      for (final member in group.members) {
+        DebugLogger().info(
+          '[GROUP] 成员: ${member.userId} (${member.name}) publicKey=${member.publicKey}',
+          tag: 'GROUP',
+        );
+      }
+      final content = message['content'] as Map<String, dynamic>?;
+      if (content == null) {
+        DebugLogger().error('join_response内容为空', tag: 'GROUP');
+        return;
+      }
+      final success = content['success'] == true;
+      final userId = message['receiverId'] ?? message['to'] ?? '';
+      final sessionKey = content['sessionKey'] as String?;
+      if (success) {
+        // 查找本地成员，更新状态为active
+        final memberIndex = group.members.indexWhere((m) => m.userId == userId);
+        if (memberIndex != -1) {
+          group.members[memberIndex].status = MemberStatus.active;
+          DebugLogger().info('成员$userId状态已更新为active', tag: 'GROUP');
+        } else {
+          DebugLogger().info('本地未找到成员$userId，尝试添加', tag: 'GROUP');
+          group.addMember(
+            Member(
+              id: "",
+              userId: userId,
+              groupId: group.id,
+              name: '',
+              publicKey: '',
+              joinedAt: DateTime.now(),
+              lastSeen: DateTime.now(),
+              status: MemberStatus.active,
+            ),
+          );
+        }
+        // 更新group的status为active
+        group.status = GroupStatus.active;
+
+        // 更新会话密钥（如有）
+        if (sessionKey != null && sessionKey.isNotEmpty) {
+          DebugLogger().info(
+            '更新会话密钥: ${sessionKey.substring(0, 8)}..., 群组id: ${group.id}',
+            tag: 'GROUP',
+          );
+          group.sessionKey = SessionKey(
+            key: sessionKey,
+            createdAt: DateTime.now(),
+            expiresAt: DateTime.now().add(Duration(days: 30)),
+            version: 1,
+          );
+        }
+        await StorageService.saveGroup(group);
+        DebugLogger().info('join_response处理完成，群组已激活', tag: 'GROUP');
+      } else {
+        DebugLogger().error(
+          'join_response失败: ${content['reason']}',
+          tag: 'GROUP',
+        );
+      }
+    } catch (e) {
+      DebugLogger().error('处理join_response失败: $e', tag: 'GROUP');
     }
   }
 

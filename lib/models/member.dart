@@ -43,6 +43,16 @@ class Member {
   bool isActive() => status == MemberStatus.active;
   bool isOnline() => DateTime.now().difference(lastSeen).inMinutes < 5;
 
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Member &&
+          runtimeType == other.runtimeType &&
+          userId == other.userId;
+
+  @override
+  int get hashCode => userId.hashCode;
+
   void updateLastSeen() {
     lastSeen = DateTime.now();
   }

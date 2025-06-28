@@ -55,14 +55,6 @@ GroupKeyPair _$GroupKeyPairFromJson(Map<String, dynamic> json) => GroupKeyPair(
       KeyAlgorithm.ecdsa,
 );
 
-Map<String, dynamic> _$GroupKeyPairToJson(GroupKeyPair instance) =>
-    <String, dynamic>{
-      'publicKey': instance.publicKey,
-      'privateKey': instance.privateKey,
-      'createdAt': instance.createdAt.toIso8601String(),
-      'algorithm': _$KeyAlgorithmEnumMap[instance.algorithm]!,
-    };
-
 const _$KeyAlgorithmEnumMap = {
   KeyAlgorithm.rsa: 'rsa',
   KeyAlgorithm.ecdsa: 'ecdsa',

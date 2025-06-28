@@ -487,6 +487,20 @@ class ConnectionManager {
     final random = Random().nextInt(1000000);
     return 'msg_${timestamp}_$random';
   }
+
+  /// 断开并移除所有连接
+  static void disconnectAllConnections() {
+    final connectionIds = _connections.keys.toList();
+    for (final connectionId in connectionIds) {
+      final connection = _connections[connectionId];
+      if (connection != null) {
+        connection.close();
+        DebugLogger().info('断开连接: $connectionId', tag: 'P2P');
+      }
+      _connections.remove(connectionId);
+    }
+    DebugLogger().info('已断开并清理所有P2P连接', tag: 'P2P');
+  }
 }
 
 /// 网络工具类

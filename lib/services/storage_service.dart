@@ -241,6 +241,7 @@ class StorageService {
 
   /// 创建数据表
   static Future<void> _createTables(Database db, int version) async {
+    DebugLogger().info('[Native] 创建数据表', tag: 'STORAGE');
     // 用户表
     await db.execute('''
       CREATE TABLE users (
@@ -286,7 +287,8 @@ class StorageService {
         permissions TEXT NOT NULL,
         groupNickname TEXT,
         isMuted INTEGER NOT NULL,
-        mutedUntil TEXT
+        mutedUntil TEXT,
+        UNIQUE(groupId, userId)
       )
     ''');
 
@@ -419,6 +421,9 @@ class StorageService {
 
       // 保存成员信息
       for (final member in group.members) {
+        if (member.id.isEmpty) {
+          continue;
+        }
         await db.insert('members', {
           'id': member.id,
           'userId': member.userId,
@@ -779,6 +784,49 @@ class StorageService {
     } catch (e) {
       DebugLogger().error('[Native] 删除群组消息失败: $e', tag: 'STORAGE');
       return false;
+    }
+  }
+
+  /// 从群组中移除指定成员
+  static Future<void> removeMemberFromGroup(
+    String groupId,
+    String userId,
+  ) async {
+    try {
+      final db = await database;
+      await db.delete(
+        'members',
+        where: 'groupId = ? AND userId = ?',
+        whereArgs: [groupId, userId],
+      );
+      DebugLogger().info(
+        '[STORAGE] 已从群组 $groupId 移除成员 $userId',
+        tag: 'STORAGE',
+      );
+    } catch (e) {
+      DebugLogger().error('[STORAGE] 移除成员失败: $e', tag: 'STORAGE');
+    }
+  }
+
+  /// 移除指定群组的所有成员
+  static Future<void> removeAllMembersFromGroup(String groupId) async {
+    try {
+      final db = await database;
+      await db.delete('members', where: 'groupId = ?', whereArgs: [groupId]);
+      DebugLogger().info('[STORAGE] 已移除群组 $groupId 的所有成员', tag: 'STORAGE');
+    } catch (e) {
+      DebugLogger().error('[STORAGE] 批量移除成员失败: $e', tag: 'STORAGE');
+    }
+  }
+
+  /// 批量删除指定群组的所有消息
+  static Future<void> removeAllMessagesFromGroup(String groupId) async {
+    try {
+      final db = await database;
+      await db.delete('messages', where: 'groupId = ?', whereArgs: [groupId]);
+      DebugLogger().info('[STORAGE] 已删除群组 $groupId 的所有消息', tag: 'STORAGE');
+    } catch (e) {
+      DebugLogger().error('[STORAGE] 批量删除消息失败: $e', tag: 'STORAGE');
     }
   }
 }

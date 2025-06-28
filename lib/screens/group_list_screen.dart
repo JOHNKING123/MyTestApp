@@ -659,6 +659,7 @@ class _GroupListScreenState extends State<GroupListScreen> {
     if (confirmed != true) return;
 
     final success = await appProvider.leaveGroup(group);
+    if (!mounted) return;
     if (success) {
       ScaffoldMessenger.of(
         context,

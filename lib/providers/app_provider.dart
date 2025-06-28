@@ -289,6 +289,7 @@ class AppProvider with ChangeNotifier {
         qrData,
         _currentUser!.id,
         _currentUser!.profile.nickname ?? _currentUser!.name,
+        _currentUser!.profile.publicKey,
       );
 
       if (success) {
@@ -565,6 +566,26 @@ class AppProvider with ChangeNotifier {
     _setLoading(true);
     try {
       DebugLogger().info('[注销] 开始注销用户...', tag: 'APP_PROVIDER');
+
+      // 注销前主动离开所有已加入的群组，通知其他成员
+      if (_currentUser != null && _groups.isNotEmpty) {
+        for (final group in List<Group>.from(_groups)) {
+          try {
+            await GroupService().leaveGroupForLogout(
+              group.id,
+              _currentUser!.id,
+            );
+          } catch (e) {
+            DebugLogger().error(
+              '[注销] 离开群组失败: ${group.id}, $e',
+              tag: 'APP_PROVIDER',
+            );
+          }
+        }
+      }
+
+      // 断开所有websocket连接
+      ConnectionManager.disconnectAllConnections();
 
       // 停止P2P服务
       await P2PService.stopServer();
