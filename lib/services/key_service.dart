@@ -15,24 +15,22 @@ class KeyService {
     return base64Encode(bytes);
   }
 
-  /// 生成用户密钥对
-  static Future<Map<String, String>> generateUserKeyPair() async {
-    // 简化的密钥对生成（实际应用中应使用椭圆曲线加密）
+  /// 生成群组会话密钥
+  static Future<String> generateGroupSessionKey() async {
     final random = Random.secure();
-
-    // 生成私钥
-    final privateKeyBytes = Uint8List.fromList(
-      List<int>.generate(32, (_) => random.nextInt(256)),
+    final bytes = Uint8List.fromList(
+      List<int>.generate(_keyLength, (_) => random.nextInt(256)),
     );
-    final privateKey = base64Encode(privateKeyBytes);
+    return base64Encode(bytes);
+  }
 
-    // 生成公钥（这里简化处理，实际应基于私钥计算）
-    final publicKeyBytes = Uint8List.fromList(
-      List<int>.generate(32, (_) => random.nextInt(256)),
+  /// 生成用户密钥对
+  /// 已废弃：请勿使用！用户密钥对请统一用Ed25519Helper.generateKeyPair并持久化到KeyManager。
+  @deprecated
+  static Future<Map<String, String>> generateUserKeyPair() async {
+    throw UnimplementedError(
+      'generateUserKeyPair已废弃，请用Ed25519Helper.generateKeyPair并持久化到KeyManager',
     );
-    final publicKey = base64Encode(publicKeyBytes);
-
-    return {'privateKey': privateKey, 'publicKey': publicKey};
   }
 
   /// 生成密钥哈希

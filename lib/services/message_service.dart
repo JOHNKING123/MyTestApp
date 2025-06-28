@@ -7,6 +7,7 @@ import '../services/encryption_service.dart';
 import '../services/storage_service.dart';
 import '../utils/debug_logger.dart';
 import 'p2p_service.dart';
+import '../services/key_manager.dart';
 
 /// 消息管理器
 class MessageService {
@@ -40,12 +41,44 @@ class MessageService {
       // 生成消息ID
       final messageId = _generateMessageId(senderId, groupId);
 
-      // 创建消息内容
-      final messageContent = MessageContent(
+      // 加密消息内容
+      final encryptedContent = await EncryptionService.encryptMessage(
+        content,
+        group.sessionKey.key,
+      );
+
+      // 获取用户密钥对
+      DebugLogger().info(
+        'MessageService: 查找用户密钥对 senderId=$senderId',
+        tag: 'MESSAGE',
+      );
+      final userKeyPair = await KeyManager.loadUserKeyPair(senderId);
+      if (userKeyPair == null) {
+        DebugLogger().error(
+          'MessageService: 未找到用户密钥对 $senderId',
+          tag: 'MESSAGE',
+        );
+        return null;
+      } else {
+        DebugLogger().info(
+          'MessageService: 找到用户密钥对 senderId=$senderId, publicKey=${userKeyPair.publicKey.substring(0, 8)}..., privateKey=${userKeyPair.privateKey.substring(0, 8)}...',
+          tag: 'MESSAGE',
+        );
+      }
+      // 签名密文
+      final signature = await Ed25519Helper.sign(
+        encryptedContent,
+        userKeyPair.privateKey,
+        userKeyPair.publicKey,
+      );
+
+      // 创建消息内容（带密文）
+      final messageContentWithEnc = MessageContent(
         text: content,
         type: MessageType.text,
         data: {},
         size: content.length,
+        encryptedContent: encryptedContent,
       );
 
       // 创建消息
@@ -53,19 +86,13 @@ class MessageService {
         id: messageId,
         groupId: groupId,
         senderId: senderId,
-        content: messageContent,
+        content: messageContentWithEnc,
         type: MessageType.text,
         timestamp: DateTime.now(),
         status: MessageStatus.sending,
-        signature: '',
-        metadata: {},
+        signature: signature,
+        metadata: {'publicKey': userKeyPair.publicKey},
         sequenceNumber: _getNextSequenceNumber(groupId),
-      );
-
-      // 加密消息内容
-      final encryptedContent = await EncryptionService.encryptMessage(
-        messageContent.text,
-        group.sessionKey.key,
       );
 
       // 创建网络消息
@@ -77,9 +104,11 @@ class MessageService {
         'content': encryptedContent,
         'timestamp': message.timestamp.millisecondsSinceEpoch,
         'sequenceNumber': message.sequenceNumber,
+        'signature': signature,
+        'publicKey': userKeyPair.publicKey,
         'metadata': {
-          'messageType': messageContent.type.toString(),
-          'size': messageContent.size,
+          'messageType': messageContentWithEnc.type.toString(),
+          'size': messageContentWithEnc.size,
         },
       };
 
@@ -107,8 +136,9 @@ class MessageService {
   /// 接收消息
   Future<Message?> receiveMessage(
     String groupId,
-    Map<String, dynamic> encryptedMessage,
-  ) async {
+    Map<String, dynamic> encryptedMessage, {
+    Map<String, String>? userPublicKeyMap, // 新增参数，userId->publicKey
+  }) async {
     try {
       DebugLogger().info('MessageService: 接收消息', tag: 'MESSAGE');
 
@@ -128,9 +158,66 @@ class MessageService {
         return null;
       }
 
-      // 解密消息内容
+      // 1. 获取senderId和消息体中的publicKey
+      final senderId = networkMessage.senderId;
+      final msgPublicKey =
+          encryptedMessage['publicKey'] ??
+          (networkMessage.metadata != null
+              ? networkMessage.metadata['publicKey']
+              : null);
+      if (msgPublicKey == null) {
+        DebugLogger().error('MessageService: 消息缺少publicKey', tag: 'MESSAGE');
+        return null;
+      }
+      // 2. 查本地公钥
+      String? localPublicKey;
+      final member = group.members.where((m) => m.userId == senderId).isNotEmpty
+          ? group.members.firstWhere((m) => m.userId == senderId)
+          : null;
+      if (userPublicKeyMap != null) {
+        localPublicKey = userPublicKeyMap[senderId];
+      } else {
+        localPublicKey = member?.publicKey;
+      }
+      if (localPublicKey == null) {
+        DebugLogger().error(
+          'MessageService: 本地未找到senderId=$senderId的公钥',
+          tag: 'MESSAGE',
+        );
+        return null;
+      }
+      // 3. double确认
+      if (localPublicKey != msgPublicKey) {
+        DebugLogger().error(
+          '安全警告：本地公钥与消息体公钥不一致！senderId=$senderId, localPublicKey=$localPublicKey, msgPublicKey=$msgPublicKey',
+          tag: 'MESSAGE',
+        );
+        return null;
+      }
+      // 4. 验签
+      final signature = encryptedMessage['signature'];
+      final cipherText = networkMessage.content;
+      DebugLogger().info(
+        'MessageService: 开始验签 senderId=$senderId, signature=${signature?.toString().substring(0, 8)}..., publicKey=${localPublicKey.substring(0, 8)}...',
+        tag: 'MESSAGE',
+      );
+      final isValid = await Ed25519Helper.verify(
+        cipherText,
+        signature,
+        localPublicKey,
+      );
+      if (!isValid) {
+        DebugLogger().error(
+          '签名校验失败！senderId=$senderId, signature=${signature?.toString().substring(0, 8)}..., publicKey=${localPublicKey.substring(0, 8)}...',
+          tag: 'MESSAGE',
+        );
+        return null;
+      } else {
+        DebugLogger().info('签名校验通过 senderId=$senderId', tag: 'MESSAGE');
+      }
+      // 5. 验签通过，解密
       final decryptedText = await EncryptionService.decryptMessage(
-        networkMessage.content,
+        cipherText,
         group.sessionKey.key,
       );
 
@@ -140,22 +227,23 @@ class MessageService {
         type: MessageType.text,
         data: {},
         size: decryptedText.length,
+        encryptedContent: cipherText,
       );
 
       // 创建消息对象
       final message = Message(
         id: networkMessage.messageId,
         groupId: groupId,
-        senderId: networkMessage.senderId,
+        senderId: senderId,
         content: decryptedContent,
         type: networkMessage.type == NetworkMessage.TYPE_CHAT_MESSAGE
             ? MessageType.text
             : MessageType.system,
         timestamp: networkMessage.timestamp,
         status: MessageStatus.delivered,
-        signature: '',
+        signature: signature,
         metadata: networkMessage.metadata,
-        sequenceNumber: 0, // 暂时设为0，实际应该从网络消息中获取
+        sequenceNumber: encryptedMessage['sequenceNumber'] ?? 0,
       );
 
       // 添加到本地消息列表

@@ -3,6 +3,9 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:pointycastle/export.dart';
+import 'package:pointycastle/export.dart' as pc;
+import 'package:cryptography/cryptography.dart';
+import 'package:cryptography/cryptography.dart' as crypt;
 
 class EncryptionService {
   static const String _algorithm = 'AES-256-GCM';
@@ -150,4 +153,60 @@ class EncryptionException implements Exception {
 
   @override
   String toString() => 'EncryptionException: $message';
+}
+
+class Ed25519Helper {
+  /// 生成Ed25519密钥对，返回base64字符串（async）
+  static Future<Map<String, String>> generateKeyPair() async {
+    final algorithm = crypt.Ed25519();
+    final keyPair = await algorithm.newKeyPair();
+    final privateKey = await keyPair.extractPrivateKeyBytes();
+    final publicKey = await keyPair.extractPublicKey();
+    return {
+      'privateKey': base64Encode(privateKey),
+      'publicKey': base64Encode(publicKey.bytes),
+    };
+  }
+
+  /// 用私钥签名，参数和返回值均为base64字符串（async）
+  static Future<String> sign(
+    String message,
+    String base64PrivateKey,
+    String base64PublicKey,
+  ) async {
+    final algorithm = crypt.Ed25519();
+    final privateKey = base64Decode(base64PrivateKey);
+    final publicKey = crypt.SimplePublicKey(
+      base64Decode(base64PublicKey),
+      type: crypt.KeyPairType.ed25519,
+    );
+    final keyPair = crypt.SimpleKeyPairData(
+      privateKey,
+      publicKey: publicKey,
+      type: crypt.KeyPairType.ed25519,
+    );
+    final signature = await algorithm.sign(
+      utf8.encode(message),
+      keyPair: keyPair,
+    );
+    return base64Encode(signature.bytes);
+  }
+
+  /// 用公钥验签，参数和签名均为base64字符串（async）
+  static Future<bool> verify(
+    String message,
+    String base64Signature,
+    String base64PublicKey,
+  ) async {
+    final algorithm = crypt.Ed25519();
+    final publicKey = crypt.SimplePublicKey(
+      base64Decode(base64PublicKey),
+      type: crypt.KeyPairType.ed25519,
+    );
+    final signature = crypt.Signature(
+      base64Decode(base64Signature),
+      publicKey: publicKey,
+    );
+    return await algorithm.verify(utf8.encode(message), signature: signature);
+  }
 }

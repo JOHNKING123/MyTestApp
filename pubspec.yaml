@@ -1,4 +1,4 @@
-name: GroupChat
+name: group_chat
 description: "端到端加密群聊应用"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -69,6 +69,7 @@ dependencies:
 
   # 权限
   permission_handler: ^11.1.0
+  cryptography: ^2.7.0
 
 dev_dependencies:
   flutter_test:

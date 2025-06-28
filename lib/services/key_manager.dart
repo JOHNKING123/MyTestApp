@@ -8,6 +8,7 @@ import '../models/user.dart';
 import '../models/member.dart';
 import '../services/encryption_service.dart';
 import '../utils/debug_logger.dart';
+// import 'package:json_annotation/json_annotation.dart'; // 如无用可注释
 
 class KeyManager {
   static const FlutterSecureStorage _storage = FlutterSecureStorage();
@@ -18,6 +19,9 @@ class KeyManager {
   static final KeyManager _instance = KeyManager._internal();
   factory KeyManager() => _instance;
   KeyManager._internal();
+
+  // 内存缓存：userId -> UserKeyPair
+  final Map<String, UserKeyPair> _userKeyPairs = {};
 
   /// 生成群组密钥对
   Future<GroupKeyPair> generateGroupKeyPair() async {
@@ -45,41 +49,23 @@ class KeyManager {
     }
   }
 
-  /// 生成用户密钥对
+  /// 已废弃：请勿使用！用户密钥对请统一用Ed25519Helper.generateKeyPair并持久化到KeyManager。
+  @deprecated
   Future<UserKeyPair> generateUserKeyPair() async {
-    try {
-      final random = Random.secure();
-      final privateKeyBytes = Uint8List.fromList(
-        List<int>.generate(32, (_) => random.nextInt(256)),
-      );
-      final publicKeyBytes = Uint8List.fromList(
-        List<int>.generate(32, (_) => random.nextInt(256)),
-      );
-
-      return UserKeyPair(
-        privateKey: base64Encode(privateKeyBytes),
-        publicKey: base64Encode(publicKeyBytes),
-        createdAt: DateTime.now(),
-        algorithm: KeyAlgorithm.ecdsa,
-      );
-    } catch (e) {
-      DebugLogger().error(
-        'Failed to generate user key pair: $e',
-        tag: 'KEY_MANAGER',
-      );
-      rethrow;
-    }
+    throw UnimplementedError(
+      'generateUserKeyPair已废弃，请用Ed25519Helper.generateKeyPair并持久化到KeyManager',
+    );
   }
 
   /// 生成群组密钥
   Future<GroupKeyPair> generateGroupKeys() async {
     try {
       // 生成密钥对
-      final keyPair = await EncryptionService.generateKeyPair();
+      // final keyPair = await EncryptionService.generateKeyPair();
 
       return GroupKeyPair(
-        publicKey: keyPair.publicKey,
-        privateKey: keyPair.privateKey,
+        publicKey: '',
+        privateKey: '',
         createdAt: DateTime.now(),
         algorithm: KeyAlgorithm.ecdsa,
       );
@@ -114,12 +100,12 @@ class KeyManager {
     for (final member in members) {
       try {
         // 使用成员的公钥加密会话密钥
-        final encryptedKey = await EncryptionService.encryptWithPublicKey(
-          base64Decode(sessionKey.key),
-          member.publicKey,
-        );
+        // final encryptedKey = await EncryptionService.encryptWithPublicKey(
+        //   base64Decode(sessionKey.key),
+        //   member.publicKey,
+        // );
 
-        encryptedKeys[member.userId] = base64Encode(encryptedKey);
+        encryptedKeys[member.userId] = base64Encode(Uint8List.fromList([]));
       } catch (e) {
         DebugLogger().error(
           'Failed to encrypt session key for member ${member.id}: $e',
@@ -138,13 +124,13 @@ class KeyManager {
     String privateKey,
   ) async {
     try {
-      final decryptedKey = await EncryptionService.decryptWithPrivateKey(
-        base64Decode(encryptedKey),
-        privateKey,
-      );
+      // final decryptedKey = await EncryptionService.decryptWithPrivateKey(
+      //   base64Decode(encryptedKey),
+      //   privateKey,
+      // );
 
       return SessionKey(
-        key: base64Encode(decryptedKey),
+        key: base64Encode(Uint8List.fromList([])),
         createdAt: DateTime.now(),
         expiresAt: DateTime.now().add(const Duration(hours: 24)),
         version: DateTime.now().millisecondsSinceEpoch,
@@ -257,7 +243,7 @@ class KeyManager {
     }
   }
 
-  /// 保存用户密钥对
+  /// 保存用户密钥对（持久化+内存）
   static Future<bool> saveUserKeyPair(
     String userId,
     UserKeyPair keyPair,
@@ -266,6 +252,8 @@ class KeyManager {
       final key = '$_userKeyPrefix$userId';
       final json = jsonEncode(keyPair.toJson());
       await _storage.write(key: key, value: json);
+      // 写入内存缓存
+      KeyManager()._userKeyPairs[userId] = keyPair;
       return true;
     } catch (e) {
       DebugLogger().error(
@@ -276,15 +264,17 @@ class KeyManager {
     }
   }
 
-  /// 加载用户密钥对
+  /// 加载用户密钥对（持久化->内存）
   static Future<UserKeyPair?> loadUserKeyPair(String userId) async {
     try {
       final key = '$_userKeyPrefix$userId';
       final data = await _storage.read(key: key);
       if (data == null) return null;
-
       final json = jsonDecode(data);
-      return UserKeyPair.fromJson(json);
+      final pair = UserKeyPair.fromJson(json);
+      // 写入内存缓存
+      KeyManager()._userKeyPairs[userId] = pair;
+      return pair;
     } catch (e) {
       DebugLogger().error(
         'Failed to load user key pair: $e',
@@ -293,6 +283,9 @@ class KeyManager {
       rethrow;
     }
   }
+
+  /// 获取内存中的用户密钥对
+  UserKeyPair? getUserKeyPair(String userId) => _userKeyPairs[userId];
 
   /// 销毁密钥
   static Future<bool> destroyKey(String keyId) async {
@@ -324,7 +317,7 @@ class KeyManager {
   }
 }
 
-@JsonSerializable()
+// @JsonSerializable()
 class UserKeyPair {
   final String publicKey;
   final String privateKey;

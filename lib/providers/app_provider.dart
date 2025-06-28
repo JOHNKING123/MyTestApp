@@ -10,6 +10,8 @@ import '../utils/debug_logger.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'dart:io';
 import 'dart:convert';
+import '../services/key_manager.dart';
+import '../services/encryption_service.dart';
 
 class AppProvider with ChangeNotifier {
   User? _currentUser;
@@ -19,6 +21,9 @@ class AppProvider with ChangeNotifier {
   String? _error;
   bool _isInitialized = false;
 
+  // 新增：userId到publicKey的Map
+  final Map<String, String> _userPublicKeyMap = {};
+
   // Getters
   User? get currentUser => _currentUser;
   List<Group> get groups => _groups;
@@ -26,6 +31,21 @@ class AppProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get error => _error;
   bool get isInitialized => _isInitialized;
+
+  // 获取userId->publicKey Map（当前所有群成员）
+  Map<String, String> getUserPublicKeyMap() {
+    final map = <String, String>{};
+    for (final group in _groups) {
+      for (final member in group.members) {
+        map[member.userId] = member.publicKey;
+      }
+    }
+    // 当前用户也加入
+    if (_currentUser != null) {
+      map[_currentUser!.id] = _currentUser!.publicKey;
+    }
+    return map;
+  }
 
   // 初始化应用
   Future<void> initialize() async {
@@ -144,9 +164,25 @@ class AppProvider with ChangeNotifier {
         tag: 'APP_PROVIDER',
       );
 
-      // 生成用户密钥对
-      final userKeyPair = await KeyService.generateUserKeyPair();
-      DebugLogger().info('[注册] 生成密钥对成功', tag: 'APP_PROVIDER');
+      // 生成用户密钥对（只在注册时生成一次，后续都用KeyManager加载）
+      final userKeyPairMap = await Ed25519Helper.generateKeyPair();
+      DebugLogger().info('[注册] 生成Ed25519密钥对成功', tag: 'APP_PROVIDER');
+
+      // 保存密钥对到KeyManager（持久化+内存）
+      final tempUserId = DateTime.now().millisecondsSinceEpoch.toString();
+      DebugLogger().info(
+        '[注册] 保存密钥对到KeyManager: userId=$tempUserId, publicKey=${userKeyPairMap['publicKey']!.substring(0, 8)}..., privateKey=${userKeyPairMap['privateKey']!.substring(0, 8)}...',
+        tag: 'APP_PROVIDER',
+      );
+      await KeyManager.saveUserKeyPair(
+        tempUserId, // userId，后面会被User对象覆盖
+        UserKeyPair(
+          publicKey: userKeyPairMap['publicKey']!,
+          privateKey: userKeyPairMap['privateKey']!,
+          createdAt: DateTime.now(),
+          algorithm: KeyAlgorithm.ed25519,
+        ),
+      );
 
       // 获取设备ID
       String deviceId = await _getOrCreateDeviceId();
@@ -155,7 +191,7 @@ class AppProvider with ChangeNotifier {
       // 创建用户资料
       final profile = UserProfile(
         nickname: nickname ?? name,
-        publicKey: userKeyPair['publicKey']!,
+        publicKey: userKeyPairMap['publicKey']!,
       );
       DebugLogger().info(
         '[注册] 创建用户资料: nickname=${profile.nickname}',
@@ -177,6 +213,16 @@ class AppProvider with ChangeNotifier {
 
       DebugLogger().info('[注册] 开始保存用户到本地存储...', tag: 'APP_PROVIDER');
       await StorageService.saveUser(user);
+      // 再次保存密钥对，确保userId与User对象一致
+      await KeyManager.saveUserKeyPair(
+        user.id,
+        UserKeyPair(
+          publicKey: userKeyPairMap['publicKey']!,
+          privateKey: userKeyPairMap['privateKey']!,
+          createdAt: DateTime.now(),
+          algorithm: KeyAlgorithm.ed25519,
+        ),
+      );
       DebugLogger().info('[注册] 用户保存到本地存储成功', tag: 'APP_PROVIDER');
 
       _currentUser = user;
@@ -456,6 +502,8 @@ class AppProvider with ChangeNotifier {
           tag: 'APP_PROVIDER',
         );
         _currentUser = savedUser;
+        // 加载密钥对到KeyManager内存
+        await KeyManager.loadUserKeyPair(_currentUser!.id);
         DebugLogger().info(
           '[加载] 用户恢复成功: ${_currentUser!.name}',
           tag: 'APP_PROVIDER',

@@ -10,6 +10,8 @@ import 'storage_service.dart';
 import 'dart:async';
 import '../services/encryption_service.dart';
 import '../utils/debug_logger.dart';
+import '../services/message_service.dart';
+import 'key_manager.dart';
 
 class GroupService {
   static final GroupService _instance = GroupService._internal();
@@ -41,7 +43,7 @@ class GroupService {
       final groupId = _generateGroupId();
 
       // 生成群组密钥对
-      final keyPair = await KeyService.generateUserKeyPair();
+      final keyPair = await Ed25519Helper.generateKeyPair();
       final groupKeys = GroupKeyPair(
         publicKey: keyPair['publicKey']!,
         privateKey: keyPair['privateKey']!,
@@ -50,7 +52,7 @@ class GroupService {
 
       // 生成会话密钥
       final sessionKey = SessionKey(
-        key: await KeyService.generateGroupKey(),
+        key: await KeyService.generateGroupSessionKey(),
         createdAt: DateTime.now(),
         expiresAt: DateTime.now().add(Duration(days: 30)),
         version: 1,
@@ -70,14 +72,18 @@ class GroupService {
       // 初始化群组消息列表
       _groupMessages[groupId] = [];
 
-      // 添加创建者为成员
-      final userKeyPair = await KeyService.generateUserKeyPair();
+      // 添加创建者为成员（用注册时密钥）
+      final userKeyPair = await KeyManager.loadUserKeyPair(creatorId);
+      if (userKeyPair == null) {
+        DebugLogger().error('创建群组失败：未找到当前用户密钥对', tag: 'GROUP');
+        return null;
+      }
       final creator = Member(
         id: _generateMemberId(),
         userId: creatorId,
         groupId: groupId,
         name: creatorName,
-        publicKey: userKeyPair['publicKey']!,
+        publicKey: userKeyPair.publicKey,
         joinedAt: DateTime.now(),
         lastSeen: DateTime.now(),
         role: MemberRole.creator,
@@ -514,9 +520,12 @@ class GroupService {
         _handleIncomingMessage(group!, message);
       };
 
-      // 生成用户密钥对
-      final userKeyPair = await KeyService.generateUserKeyPair();
-
+      // 生成用户密钥对（改为用注册时密钥）
+      final userKeyPair = await KeyManager.loadUserKeyPair(userId);
+      if (userKeyPair == null) {
+        DebugLogger().error('加入群组失败：未找到当前用户密钥对', tag: 'GROUP');
+        return false;
+      }
       // 发送 join_request 消息给群主端
       final joinRequest = {
         'type': NetworkMessage.TYPE_JOIN_REQUEST,
@@ -524,7 +533,7 @@ class GroupService {
         'groupId': groupId,
         'senderId': userId,
         'userName': userName,
-        'publicKey': userKeyPair['publicKey'],
+        'publicKey': userKeyPair.publicKey,
         'timestamp': DateTime.now().millisecondsSinceEpoch,
       };
       P2PService.broadcastMessage(joinRequest);
@@ -582,76 +591,19 @@ class GroupService {
         return false;
       }
 
-      // 生成消息ID
-      final messageId = _generateMessageId();
-      final sequenceNumber = DateTime.now().millisecondsSinceEpoch;
-
-      // 创建消息
-      final message = Message(
-        id: messageId,
-        groupId: groupId,
-        senderId: senderId,
-        content: MessageContent(
-          text: content,
-          type: MessageType.text,
-          data: {},
-          size: content.length,
-        ),
-        type: MessageType.text,
-        timestamp: DateTime.now(),
-        status: MessageStatus.sending,
-        signature: '',
-        metadata: {},
-        sequenceNumber: sequenceNumber,
+      // 只做业务校验，实际加密/签名/广播交给MessageService
+      final message = await MessageService().sendMessage(
+        groupId,
+        content,
+        senderId,
       );
-
-      // 加密消息内容
-      final encryptedContent = EncryptionService.encryptMessage(
-        message.content.text,
-        group.sessionKey.key,
-      );
-
-      // 创建网络消息
-      final networkMessage = {
-        'type': NetworkMessage.TYPE_CHAT_MESSAGE,
-        'messageId': messageId,
-        'groupId': groupId,
-        'senderId': senderId,
-        'content': encryptedContent,
-        'timestamp': message.timestamp.millisecondsSinceEpoch,
-        'metadata': {'senderName': sender.name, 'messageType': 'text'},
-        'sequenceNumber': sequenceNumber,
-      };
-
-      // 广播消息
-      DebugLogger().info('准备广播消息到群组: $groupId', tag: 'GROUP');
-      DebugLogger().info('消息内容: ${jsonEncode(networkMessage)}', tag: 'GROUP');
-
-      // 检查P2P服务是否运行
-      final serverStatus = P2PService.getServerStatus();
-      DebugLogger().info('P2P服务器状态: ${jsonEncode(serverStatus)}', tag: 'GROUP');
-
-      // 获取群组连接信息
-      final connections = P2PService.getConnectionsByGroup(groupId);
-      DebugLogger().info(
-        '群组 $groupId 的连接数: ${connections.length}',
-        tag: 'GROUP',
-      );
-      for (final conn in connections) {
-        DebugLogger().info(
-          '  - 连接: ${conn.connectionId} (用户: ${conn.userId}, 状态: ${conn.status})',
-          tag: 'GROUP',
-        );
+      if (message != null) {
+        DebugLogger().info('消息发送成功', tag: 'GROUP');
+        return true;
+      } else {
+        DebugLogger().error('消息发送失败', tag: 'GROUP');
+        return false;
       }
-
-      P2PService.broadcastMessage(networkMessage);
-
-      // 注意：不要在这里立即添加消息到本地列表
-      // 消息会通过P2P网络广播，然后通过_handleChatMessage方法接收并添加
-      // 这样可以避免重复消息问题
-
-      DebugLogger().info('消息发送成功', tag: 'GROUP');
-      return true;
     } catch (e) {
       DebugLogger().error('发送消息失败: $e', tag: 'GROUP');
       return false;
@@ -776,30 +728,22 @@ class GroupService {
 
       DebugLogger().info('处理新消息: $messageId (发送者: $senderId)', tag: 'GROUP');
 
-      // 解密消息内容
-      final decryptedContent = EncryptionService.decryptMessage(
-        encryptedContent,
-        group.sessionKey.key,
+      // ==== 新增：统一走MessageService.receiveMessage进行验签和解密 ====
+      DebugLogger().info(
+        'GroupService: 调用MessageService.receiveMessage进行验签和解密',
+        tag: 'GROUP',
       );
-
-      // 创建消息对象
-      final chatMessage = Message(
-        id: messageId,
-        groupId: group.id,
-        senderId: senderId,
-        content: MessageContent(
-          text: decryptedContent,
-          type: MessageType.text,
-          data: {},
-          size: decryptedContent.length,
-        ),
-        type: MessageType.text,
-        timestamp: DateTime.fromMillisecondsSinceEpoch(message['timestamp']),
-        status: MessageStatus.delivered,
-        signature: message['signature'] ?? '',
-        metadata: message['metadata'] ?? {},
-        sequenceNumber: sequenceNumber,
+      final chatMessage = await MessageService().receiveMessage(
+        group.id,
+        message,
       );
+      if (chatMessage == null) {
+        DebugLogger().error(
+          'GroupService: 消息验签或解密失败，丢弃: $messageId',
+          tag: 'GROUP',
+        );
+        return;
+      }
 
       // 添加到本地消息列表
       _addMessageToGroup(group.id, chatMessage);
@@ -1154,6 +1098,13 @@ class GroupService {
       final groupData = message['content'];
       final group = Group.fromJson(groupData);
       await StorageService.saveGroup(group);
+      // 循环打出member的信息
+      for (final member in group.members) {
+        DebugLogger().info(
+          '[GROUP] 成员: ${member.userId} (${member.name}) publicKey=${member.publicKey.substring(0, 8)}...',
+          tag: 'GROUP',
+        );
+      }
       DebugLogger().info(
         '[GROUP] 已同步群组数据: groupId=${group.id}, 成员数=${group.members.length}',
         tag: 'GROUP',

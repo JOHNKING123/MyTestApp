@@ -6,6 +6,7 @@ import '../providers/app_provider.dart';
 import '../screens/group_qr_screen.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../services/group_service.dart';
+import 'package:flutter/services.dart';
 
 class ChatScreen extends StatefulWidget {
   final Group group;
@@ -480,6 +481,21 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.copy),
+                      label: const Text('复制二维码数据'),
+                      onPressed: () async {
+                        await Clipboard.setData(
+                          ClipboardData(text: snapshot.data!),
+                        );
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('二维码数据已复制')),
+                          );
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 8),
                     const Text('扫描此二维码加入群组', style: TextStyle(fontSize: 14)),
                   ],
                 );
