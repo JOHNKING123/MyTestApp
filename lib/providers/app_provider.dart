@@ -6,6 +6,7 @@ import '../services/group_service.dart';
 import '../services/p2p_service.dart';
 import '../services/storage_service.dart';
 import '../services/key_service.dart';
+import '../utils/debug_logger.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'dart:io';
 import 'dart:convert';
@@ -29,44 +30,44 @@ class AppProvider with ChangeNotifier {
   // 初始化应用
   Future<void> initialize() async {
     if (_isInitialized) {
-      print('应用已经初始化，跳过重复初始化');
+      DebugLogger().info('应用已经初始化，跳过重复初始化', tag: 'APP_PROVIDER');
       return;
     }
 
     _setLoading(true);
     try {
-      print('开始应用初始化...');
+      DebugLogger().info('开始应用初始化...', tag: 'APP_PROVIDER');
 
       // 设置P2P服务回调
-      print('设置P2P服务回调...');
+      DebugLogger().info('设置P2P服务回调...', tag: 'APP_PROVIDER');
       P2PService.onMessageReceived = _handleP2PMessage;
       P2PService.onGroupUpdated = _handleGroupUpdate;
       P2PService.onConnectionValidate = _validateConnection;
       P2PService.onConnectionDisconnect = _handleConnectionDisconnect;
 
       // 加载用户数据
-      print('加载用户数据...');
+      DebugLogger().info('加载用户数据...', tag: 'APP_PROVIDER');
       await _loadUser();
-      print('用户加载完成: ${_currentUser?.name}');
+      DebugLogger().info('用户加载完成: ${_currentUser?.name}', tag: 'APP_PROVIDER');
 
       // 加载群组数据
-      print('加载群组数据...');
+      DebugLogger().info('加载群组数据...', tag: 'APP_PROVIDER');
       await _loadGroups();
-      print('群组加载完成: ${_groups.length} 个群组');
+      DebugLogger().info('群组加载完成: ${_groups.length} 个群组', tag: 'APP_PROVIDER');
 
       // 设置消息更新监听
-      print('设置消息监听...');
+      DebugLogger().info('设置消息监听...', tag: 'APP_PROVIDER');
       setupMessageListener();
 
       // 为群组创建者启动P2P服务器
-      print('启动群组服务器...');
+      DebugLogger().info('启动群组服务器...', tag: 'APP_PROVIDER');
       await _startGroupServers();
 
       _setError(null);
       _isInitialized = true;
-      print('应用初始化完成');
+      DebugLogger().info('应用初始化完成', tag: 'APP_PROVIDER');
     } catch (e) {
-      print('初始化失败: $e');
+      DebugLogger().error('初始化失败: $e', tag: 'APP_PROVIDER');
       _setError('初始化失败: $e');
     } finally {
       _setLoading(false);
@@ -77,45 +78,60 @@ class AppProvider with ChangeNotifier {
   Future<void> _startGroupServers() async {
     if (_currentUser == null) return;
 
-    print('检查并启动群组服务器...');
+    DebugLogger().info('检查并启动群组服务器...', tag: 'APP_PROVIDER');
     for (final group in _groups) {
       // 更新群组状态并保存到本地存储
       if (group.status != GroupStatus.active) {
         group.status = GroupStatus.active;
         await StorageService.saveGroup(group);
-        print('群组 ${group.name} 状态已更新为active并保存');
+        DebugLogger().info(
+          '群组 ${group.name} 状态已更新为active并保存',
+          tag: 'APP_PROVIDER',
+        );
       }
 
       // 如果当前用户是群组创建者，启动P2P服务器
       if (group.creatorId == _currentUser!.id) {
-        print('为群组 ${group.name} 启动P2P服务器');
+        DebugLogger().info('为群组 ${group.name} 启动P2P服务器', tag: 'APP_PROVIDER');
         final success = await GroupService().ensureGroupServerRunning(group);
         if (success) {
-          print('群组 ${group.name} 的P2P服务器启动成功');
+          DebugLogger().info(
+            '群组 ${group.name} 的P2P服务器启动成功',
+            tag: 'APP_PROVIDER',
+          );
         } else {
-          print('群组 ${group.name} 的P2P服务器启动失败');
+          DebugLogger().info(
+            '群组 ${group.name} 的P2P服务器启动失败',
+            tag: 'APP_PROVIDER',
+          );
         }
       } else {
         // 如果当前用户是群组成员，连接到群组创建者的P2P服务器
-        print('为群组 ${group.name} 建立P2P连接');
+        DebugLogger().info('为群组 ${group.name} 建立P2P连接', tag: 'APP_PROVIDER');
         final success = await GroupService().connectToGroupServer(
           group,
           _currentUser!.id,
         );
         if (success) {
-          print('群组 ${group.name} 的P2P连接建立成功');
+          DebugLogger().info(
+            '群组 ${group.name} 的P2P连接建立成功',
+            tag: 'APP_PROVIDER',
+          );
         } else {
-          print('群组 ${group.name} 的P2P连接建立失败');
+          DebugLogger().info(
+            '群组 ${group.name} 的P2P连接建立失败',
+            tag: 'APP_PROVIDER',
+          );
         }
       }
     }
 
     // 在P2P连接建立完成后，检查群组状态
     if (_groups.isNotEmpty) {
-      print('[加载] 开始检查群组状态...');
+      DebugLogger().info('[加载] 开始检查群组状态...', tag: 'APP_PROVIDER');
       // 暂时注释掉，因为GroupService没有这个方法
       // await GroupService().checkAllGroupsStatus(_groups, _currentUser!.id);
-      print('[加载] 群组状态检查完成');
+      DebugLogger().info('[加载] 群组状态检查完成', tag: 'APP_PROVIDER');
     }
   }
 
@@ -123,22 +139,28 @@ class AppProvider with ChangeNotifier {
   Future<bool> setupUser(String name, [String? nickname]) async {
     _setLoading(true);
     try {
-      print('[注册] 开始设置用户: name=$name, nickname=$nickname');
+      DebugLogger().info(
+        '[注册] 开始设置用户: name=$name, nickname=$nickname',
+        tag: 'APP_PROVIDER',
+      );
 
       // 生成用户密钥对
       final userKeyPair = await KeyService.generateUserKeyPair();
-      print('[注册] 生成密钥对成功');
+      DebugLogger().info('[注册] 生成密钥对成功', tag: 'APP_PROVIDER');
 
       // 获取设备ID
       String deviceId = await _getOrCreateDeviceId();
-      print('[注册] 获取设备ID: $deviceId');
+      DebugLogger().info('[注册] 获取设备ID: $deviceId', tag: 'APP_PROVIDER');
 
       // 创建用户资料
       final profile = UserProfile(
         nickname: nickname ?? name,
         publicKey: userKeyPair['publicKey']!,
       );
-      print('[注册] 创建用户资料: nickname=${profile.nickname}');
+      DebugLogger().info(
+        '[注册] 创建用户资料: nickname=${profile.nickname}',
+        tag: 'APP_PROVIDER',
+      );
 
       final user = User(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -148,22 +170,26 @@ class AppProvider with ChangeNotifier {
         lastActiveAt: DateTime.now(),
         deviceId: deviceId,
       );
-      print(
+      DebugLogger().info(
         '[注册] 创建用户对象: id=${user.id}, name=${user.name}, deviceId=${user.deviceId}',
+        tag: 'APP_PROVIDER',
       );
 
-      print('[注册] 开始保存用户到本地存储...');
+      DebugLogger().info('[注册] 开始保存用户到本地存储...', tag: 'APP_PROVIDER');
       await StorageService.saveUser(user);
-      print('[注册] 用户保存到本地存储成功');
+      DebugLogger().info('[注册] 用户保存到本地存储成功', tag: 'APP_PROVIDER');
 
       _currentUser = user;
       _setError(null);
       notifyListeners();
 
-      print('[注册] 用户设置完成，当前用户: ${_currentUser!.name}');
+      DebugLogger().info(
+        '[注册] 用户设置完成，当前用户: ${_currentUser!.name}',
+        tag: 'APP_PROVIDER',
+      );
       return true;
     } catch (e) {
-      print('[注册] 用户设置失败: $e');
+      DebugLogger().error('[注册] 用户设置失败: $e', tag: 'APP_PROVIDER');
       _setError('用户设置失败: $e');
       return false;
     } finally {
@@ -284,28 +310,28 @@ class AppProvider with ChangeNotifier {
 
   // 设置消息更新监听
   void setupMessageListener() {
-    print('设置消息更新监听器...');
+    DebugLogger().info('设置消息更新监听器...', tag: 'APP_PROVIDER');
 
     GroupService().onMessageUpdated = (groupId) {
       // 当有新消息时，通知UI更新
-      print('消息更新回调触发: $groupId');
+      DebugLogger().info('消息更新回调触发: $groupId', tag: 'APP_PROVIDER');
       notifyListeners();
     };
 
     GroupService().onGroupUpdated = (groupId) async {
       // 当群组信息更新时，重新加载群组数据以确保UI更新
-      print('群组更新回调触发: $groupId');
+      DebugLogger().info('群组更新回调触发: $groupId', tag: 'APP_PROVIDER');
       await _loadGroups();
       notifyListeners();
     };
 
-    print('消息更新监听器设置完成');
+    DebugLogger().info('消息更新监听器设置完成', tag: 'APP_PROVIDER');
   }
 
   // 加载群组
   Future<void> _loadGroups() async {
     try {
-      print('[加载] 开始加载群组...');
+      DebugLogger().info('[加载] 开始加载群组...', tag: 'APP_PROVIDER');
       final groups = await StorageService.loadAllGroups();
       _groups.clear();
       _groups.addAll(groups);
@@ -313,10 +339,13 @@ class AppProvider with ChangeNotifier {
       // 加载所有群组的消息到内存缓存
       await GroupService().loadAllGroupMessages();
 
-      print('[加载] 群组加载完成，共 ${_groups.length} 个群组');
+      DebugLogger().info(
+        '[加载] 群组加载完成，共 ${_groups.length} 个群组',
+        tag: 'APP_PROVIDER',
+      );
       notifyListeners();
     } catch (e) {
-      print('[加载] 加载群组失败: $e');
+      DebugLogger().error('[加载] 加载群组失败: $e', tag: 'APP_PROVIDER');
       _setError('加载群组失败: $e');
     }
   }
@@ -407,32 +436,39 @@ class AppProvider with ChangeNotifier {
   // 私有方法
   Future<void> _loadUser() async {
     try {
-      print('[加载] 开始加载用户...');
+      DebugLogger().info('[加载] 开始加载用户...', tag: 'APP_PROVIDER');
 
       // 获取设备ID（基于硬件信息，始终不变）
       String deviceId = await _getOrCreateDeviceId();
-      print('[加载] 获取设备ID: $deviceId');
+      DebugLogger().info('[加载] 获取设备ID: $deviceId', tag: 'APP_PROVIDER');
 
       // 尝试根据设备ID查找已保存的用户
-      print('[加载] 开始从本地存储查找用户...');
+      DebugLogger().info('[加载] 开始从本地存储查找用户...', tag: 'APP_PROVIDER');
       final savedUser = await StorageService.loadUserByDeviceId(deviceId);
-      print('[加载] 从本地存储查找结果: ${savedUser != null ? "找到用户" : "未找到用户"}');
+      DebugLogger().info(
+        '[加载] 从本地存储查找结果: ${savedUser != null ? "找到用户" : "未找到用户"}',
+        tag: 'APP_PROVIDER',
+      );
 
       if (savedUser != null) {
-        print(
+        DebugLogger().info(
           '[加载] 找到已保存的用户: id=${savedUser.id}, name=${savedUser.name}, deviceId=${savedUser.deviceId}',
+          tag: 'APP_PROVIDER',
         );
         _currentUser = savedUser;
-        print('[加载] 用户恢复成功: ${_currentUser!.name}');
+        DebugLogger().info(
+          '[加载] 用户恢复成功: ${_currentUser!.name}',
+          tag: 'APP_PROVIDER',
+        );
         return;
       }
 
       // 如果没有保存的用户（可能是首次启动或注销后），不自动创建新用户
       // 用户需要手动注册
-      print('[加载] 未找到已保存的用户，需要用户手动注册');
+      DebugLogger().info('[加载] 未找到已保存的用户，需要用户手动注册', tag: 'APP_PROVIDER');
       _currentUser = null;
     } catch (e) {
-      print('[加载] 加载用户失败: $e');
+      DebugLogger().error('[加载] 加载用户失败: $e', tag: 'APP_PROVIDER');
       _currentUser = null;
     }
   }
@@ -480,15 +516,15 @@ class AppProvider with ChangeNotifier {
   Future<bool> logout() async {
     _setLoading(true);
     try {
-      print('[注销] 开始注销用户...');
+      DebugLogger().info('[注销] 开始注销用户...', tag: 'APP_PROVIDER');
 
       // 停止P2P服务
       await P2PService.stopServer();
-      print('[注销] P2P服务已停止');
+      DebugLogger().info('[注销] P2P服务已停止', tag: 'APP_PROVIDER');
 
       // 清空消息缓存
       GroupService().clearAllGroupMessages();
-      print('[注销] 消息缓存已清空');
+      DebugLogger().info('[注销] 消息缓存已清空', tag: 'APP_PROVIDER');
 
       // 清空用户数据
       _currentUser = null;
@@ -497,15 +533,15 @@ class AppProvider with ChangeNotifier {
 
       // 清空本地存储
       await StorageService.clearAllData();
-      print('[注销] 本地存储已清空');
+      DebugLogger().info('[注销] 本地存储已清空', tag: 'APP_PROVIDER');
 
       _setError(null);
       notifyListeners();
 
-      print('[注销] 用户注销完成');
+      DebugLogger().info('[注销] 用户注销完成', tag: 'APP_PROVIDER');
       return true;
     } catch (e) {
-      print('[注销] 用户注销失败: $e');
+      DebugLogger().error('[注销] 用户注销失败: $e', tag: 'APP_PROVIDER');
       _setError('用户注销失败: $e');
       return false;
     } finally {
@@ -517,15 +553,15 @@ class AppProvider with ChangeNotifier {
   Future<bool> logoutKeepUser() async {
     _setLoading(true);
     try {
-      print('[注销] 开始注销用户（保留用户信息）...');
+      DebugLogger().info('[注销] 开始注销用户（保留用户信息）...', tag: 'APP_PROVIDER');
 
       // 停止P2P服务
       await P2PService.stopServer();
-      print('[注销] P2P服务已停止');
+      DebugLogger().info('[注销] P2P服务已停止', tag: 'APP_PROVIDER');
 
       // 清空消息缓存
       GroupService().clearAllGroupMessages();
-      print('[注销] 消息缓存已清空');
+      DebugLogger().info('[注销] 消息缓存已清空', tag: 'APP_PROVIDER');
 
       // 清空群组和消息数据，但保留用户信息
       _currentGroup = null;
@@ -533,15 +569,15 @@ class AppProvider with ChangeNotifier {
 
       // 清空群组和消息存储，但保留用户信息
       await StorageService.clearGroupsAndMessages();
-      print('[注销] 群组和消息数据已清空');
+      DebugLogger().info('[注销] 群组和消息数据已清空', tag: 'APP_PROVIDER');
 
       _setError(null);
       notifyListeners();
 
-      print('[注销] 用户注销完成（保留用户信息）');
+      DebugLogger().info('[注销] 用户注销完成（保留用户信息）', tag: 'APP_PROVIDER');
       return true;
     } catch (e) {
-      print('[注销] 用户注销失败: $e');
+      DebugLogger().error('[注销] 用户注销失败: $e', tag: 'APP_PROVIDER');
       _setError('用户注销失败: $e');
       return false;
     } finally {
@@ -552,7 +588,7 @@ class AppProvider with ChangeNotifier {
   // 重置数据库
   Future<bool> resetDatabase() async {
     try {
-      print('开始重置数据库...');
+      DebugLogger().info('开始重置数据库...', tag: 'APP_PROVIDER');
 
       // 停止所有P2P服务
       await P2PService.stopServer();
@@ -572,10 +608,10 @@ class AppProvider with ChangeNotifier {
       // 通知UI更新
       notifyListeners();
 
-      print('数据库重置完成');
+      DebugLogger().info('数据库重置完成', tag: 'APP_PROVIDER');
       return true;
     } catch (e) {
-      print('重置数据库失败: $e');
+      DebugLogger().error('重置数据库失败: $e', tag: 'APP_PROVIDER');
       _setError('重置数据库失败: $e');
       return false;
     }
@@ -584,14 +620,14 @@ class AppProvider with ChangeNotifier {
   // 获取或创建设备ID
   Future<String> _getOrCreateDeviceId() async {
     try {
-      print('[设备ID] 开始生成设备ID...');
+      DebugLogger().info('[设备ID] 开始生成设备ID...', tag: 'APP_PROVIDER');
       // 设备ID应该只基于硬件信息，不依赖任何存储
       // 每次调用都重新生成，确保基于当前硬件状态
       String deviceId = await _generateHardwareBasedDeviceId();
-      print('[设备ID] 生成的设备ID: $deviceId');
+      DebugLogger().info('[设备ID] 生成的设备ID: $deviceId', tag: 'APP_PROVIDER');
       return deviceId;
     } catch (e) {
-      print('[设备ID] 获取设备ID失败: $e');
+      DebugLogger().error('[设备ID] 获取设备ID失败: $e', tag: 'APP_PROVIDER');
       // 如果获取失败，使用固定的后备标识符
       return 'device_error';
     }
@@ -607,44 +643,51 @@ class AppProvider with ChangeNotifier {
         final androidInfo = await deviceInfo.androidInfo;
         // 使用Android ID作为主要标识符
         deviceId = 'android_${androidInfo.id}';
-        print(
+        DebugLogger().info(
           'Android设备信息: ${androidInfo.brand} ${androidInfo.model} (ID: ${androidInfo.id})',
+          tag: 'APP_PROVIDER',
         );
       } else if (Platform.isIOS) {
         final iosInfo = await deviceInfo.iosInfo;
         // 使用iOS的identifierForVendor作为主要标识符
         deviceId = 'ios_${iosInfo.identifierForVendor}';
-        print(
+        DebugLogger().info(
           'iOS设备信息: ${iosInfo.name} ${iosInfo.model} (ID: ${iosInfo.identifierForVendor})',
+          tag: 'APP_PROVIDER',
         );
       } else if (Platform.isWindows) {
         final windowsInfo = await deviceInfo.windowsInfo;
         // 使用Windows的设备ID
         deviceId = 'windows_${windowsInfo.deviceId}';
-        print(
+        DebugLogger().info(
           'Windows设备信息: ${windowsInfo.computerName} (ID: ${windowsInfo.deviceId})',
+          tag: 'APP_PROVIDER',
         );
       } else if (Platform.isMacOS) {
         final macOsInfo = await deviceInfo.macOsInfo;
         // 使用macOS的硬件UUID
         deviceId = 'macos_${macOsInfo.computerName}_${macOsInfo.osRelease}';
-        print(
+        DebugLogger().info(
           'macOS设备信息: ${macOsInfo.computerName} (ID: ${macOsInfo.osRelease})',
+          tag: 'APP_PROVIDER',
         );
       } else if (Platform.isLinux) {
         final linuxInfo = await deviceInfo.linuxInfo;
         // 使用Linux的机器ID
         deviceId = 'linux_${linuxInfo.machineId}';
-        print('Linux设备信息: ${linuxInfo.name} (ID: ${linuxInfo.machineId})');
+        DebugLogger().info(
+          'Linux设备信息: ${linuxInfo.name} (ID: ${linuxInfo.machineId})',
+          tag: 'APP_PROVIDER',
+        );
       } else {
         // 对于其他平台，使用固定的标识符
         deviceId = 'unknown_platform';
-        print('未知平台设备，使用固定标识符');
+        DebugLogger().info('未知平台设备，使用固定标识符', tag: 'APP_PROVIDER');
       }
 
       return deviceId;
     } catch (e) {
-      print('生成硬件设备ID失败: $e');
+      DebugLogger().error('生成硬件设备ID失败: $e', tag: 'APP_PROVIDER');
       // 如果获取硬件信息失败，使用固定的后备标识符
       return 'hardware_error';
     }
@@ -652,26 +695,26 @@ class AppProvider with ChangeNotifier {
 
   /// 处理连接断开
   void _handleConnectionDisconnect(String userId, String groupId) {
-    print('处理连接断开: 用户=$userId, 群组=$groupId');
+    DebugLogger().info('处理连接断开: 用户=$userId, 群组=$groupId', tag: 'APP_PROVIDER');
 
     // 检查当前用户是否是被断开的用户
     if (currentUser?.id == userId) {
-      print('当前用户连接断开，检查群组状态');
+      DebugLogger().info('当前用户连接断开，检查群组状态', tag: 'APP_PROVIDER');
 
       // 检查群组是否仍然有效
       final group = groups.where((g) => g.id == groupId).firstOrNull;
       if (group != null && group.status == GroupStatus.active) {
         // 检查用户是否真的是群组成员
         if (group.isMember(userId)) {
-          print('群组仍然有效且用户是成员，尝试重新连接');
+          DebugLogger().info('群组仍然有效且用户是成员，尝试重新连接', tag: 'APP_PROVIDER');
           _reconnectToGroup(group);
         } else {
-          print('用户不是群组成员，不进行重连');
+          DebugLogger().info('用户不是群组成员，不进行重连', tag: 'APP_PROVIDER');
           // 标记群组为不可用，因为用户无法连接
           _markGroupUnavailable(group);
         }
       } else {
-        print('群组无效或已不可用，不进行重连');
+        DebugLogger().info('群组无效或已不可用，不进行重连', tag: 'APP_PROVIDER');
       }
     }
   }
@@ -679,12 +722,12 @@ class AppProvider with ChangeNotifier {
   /// 重新连接到群组
   Future<void> _reconnectToGroup(Group group) async {
     try {
-      print('开始重新连接到群组: ${group.id}');
+      DebugLogger().info('开始重新连接到群组: ${group.id}', tag: 'APP_PROVIDER');
 
       // 从本地存储获取群组信息
       final storedGroup = await StorageService.loadGroup(group.id);
       if (storedGroup == null) {
-        print('无法获取群组信息，无法重连');
+        DebugLogger().info('无法获取群组信息，无法重连', tag: 'APP_PROVIDER');
         return;
       }
 
@@ -692,7 +735,7 @@ class AppProvider with ChangeNotifier {
       final groupService = GroupService();
       final qrData = await groupService.generateGroupQRData(storedGroup);
       if (qrData == null) {
-        print('无法获取群组二维码数据，无法重连');
+        DebugLogger().info('无法获取群组二维码数据，无法重连', tag: 'APP_PROVIDER');
         return;
       }
 
@@ -701,7 +744,10 @@ class AppProvider with ChangeNotifier {
       final serverIP = qrDataMap['serverIP'];
       final serverPort = qrDataMap['serverPort'];
 
-      print('尝试重连到服务器: $serverIP:$serverPort');
+      DebugLogger().info(
+        '尝试重连到服务器: $serverIP:$serverPort',
+        tag: 'APP_PROVIDER',
+      );
 
       // 尝试重新连接
       final success = await P2PService.connectToServer(
@@ -712,18 +758,18 @@ class AppProvider with ChangeNotifier {
       );
 
       if (success) {
-        print('群组重连成功: ${group.id}');
+        DebugLogger().info('群组重连成功: ${group.id}', tag: 'APP_PROVIDER');
         // 更新群组状态
         group.status = GroupStatus.active;
         await StorageService.saveGroup(group);
         notifyListeners();
       } else {
-        print('群组重连失败: ${group.id}');
+        DebugLogger().info('群组重连失败: ${group.id}', tag: 'APP_PROVIDER');
         // 标记群组为不可用
         _markGroupUnavailable(group);
       }
     } catch (e) {
-      print('重连群组时发生错误: $e');
+      DebugLogger().error('重连群组时发生错误: $e', tag: 'APP_PROVIDER');
       // 标记群组为不可用
       _markGroupUnavailable(group);
     }
@@ -732,24 +778,27 @@ class AppProvider with ChangeNotifier {
   /// 标记群组为不可用
   Future<void> _markGroupUnavailable(Group group) async {
     try {
-      print('标记群组为不可用: ${group.id}');
+      DebugLogger().info('标记群组为不可用: ${group.id}', tag: 'APP_PROVIDER');
       group.status = GroupStatus.unavailable;
       await StorageService.saveGroup(group);
       notifyListeners();
     } catch (e) {
-      print('标记群组状态失败: $e');
+      DebugLogger().error('标记群组状态失败: $e', tag: 'APP_PROVIDER');
     }
   }
 
   /// 处理P2P消息
   void _handleP2PMessage(Map<String, dynamic> message) {
-    print('AppProvider收到P2P消息: ${message['type']}');
+    DebugLogger().info(
+      'AppProvider收到P2P消息: ${message['type']}',
+      tag: 'APP_PROVIDER',
+    );
 
     // 根据消息类型处理
     switch (message['type']) {
       case 'message':
         // 聊天消息，交给GroupService处理
-        print('聊天消息: ${message}');
+        DebugLogger().info('聊天消息: ${message}', tag: 'APP_PROVIDER');
         final groupId = message['groupId'] as String?;
         // 暂时注释掉，因为GroupService没有这个方法
         // GroupService().handleChatMessage(message);
@@ -762,13 +811,13 @@ class AppProvider with ChangeNotifier {
         }
         break;
       default:
-        print('未知消息类型: ${message['type']}');
+        DebugLogger().info('未知消息类型: ${message['type']}', tag: 'APP_PROVIDER');
     }
   }
 
   /// 处理群组更新
   void _handleGroupUpdate(String groupId) {
-    print('处理群组更新: $groupId');
+    DebugLogger().info('处理群组更新: $groupId', tag: 'APP_PROVIDER');
     // 重新加载群组数据
     _loadGroups();
     notifyListeners();
@@ -780,39 +829,43 @@ class AppProvider with ChangeNotifier {
     String groupId,
     bool isNewMember,
   ) async {
-    print('AppProvider验证连接: 用户=$userId, 群组=$groupId, 是否新成员=$isNewMember');
+    DebugLogger().info(
+      'AppProvider验证连接: 用户=$userId, 群组=$groupId, 是否新成员=$isNewMember',
+      tag: 'APP_PROVIDER',
+    );
 
     // 检查群组是否存在
     final group = groups.where((g) => g.id == groupId).firstOrNull;
     if (group == null) {
-      print('❌ 群组不存在: $groupId');
+      DebugLogger().error('❌ 群组不存在: $groupId', tag: 'APP_PROVIDER');
       return false;
     }
-    print('✅ 群组存在: ${group.name}');
-    print('群组状态: ${group.status}');
-    print('群组成员数: ${group.members.length}');
+    DebugLogger().info('✅ 群组存在: ${group.name}', tag: 'APP_PROVIDER');
+    DebugLogger().info('群组状态: ${group.status}', tag: 'APP_PROVIDER');
+    DebugLogger().info('群组成员数: ${group.members.length}', tag: 'APP_PROVIDER');
 
     // 检查群组状态是否有效
     if (group.status != GroupStatus.active) {
-      print('❌ 群组状态无效: ${group.status}');
+      DebugLogger().error('❌ 群组状态无效: ${group.status}', tag: 'APP_PROVIDER');
       return false;
     }
-    print('✅ 群组状态有效: ${group.status}');
+    DebugLogger().info('✅ 群组状态有效: ${group.status}', tag: 'APP_PROVIDER');
 
     // 根据是否为新成员进行不同的验证
     if (isNewMember) {
       // 新成员加入验证：只检查群组是否存在且状态有效
-      print('✅ 新成员验证通过');
+      DebugLogger().info('✅ 新成员验证通过', tag: 'APP_PROVIDER');
       return true;
     } else {
       // 已加入成员连接验证：检查用户是否为群组成员
-      print('检查用户是否为群组成员...');
-      print(
+      DebugLogger().info('检查用户是否为群组成员...', tag: 'APP_PROVIDER');
+      DebugLogger().info(
         '群组成员列表: ${group.members.map((m) => '${m.userId}(${m.name})').join(', ')}',
+        tag: 'APP_PROVIDER',
       );
 
       final isMember = group.isMember(userId);
-      print('用户是否是群组成员: $isMember');
+      DebugLogger().info('用户是否是群组成员: $isMember', tag: 'APP_PROVIDER');
       return isMember;
     }
   }
@@ -826,14 +879,20 @@ class AppProvider with ChangeNotifier {
 
     _setLoading(true);
     try {
-      print('AppProvider: 开始重新连接群组: ${group.name}');
+      DebugLogger().info(
+        'AppProvider: 开始重新连接群组: ${group.name}',
+        tag: 'APP_PROVIDER',
+      );
 
       final success = await GroupService().reconnectToGroup(
         group,
         _currentUser!.id,
       );
 
-      print('AppProvider: GroupService.reconnectToGroup 返回结果: $success');
+      DebugLogger().info(
+        'AppProvider: GroupService.reconnectToGroup 返回结果: $success',
+        tag: 'APP_PROVIDER',
+      );
 
       if (success) {
         _setError(null);
@@ -846,24 +905,30 @@ class AppProvider with ChangeNotifier {
           final index = _groups.indexWhere((g) => g.id == group.id);
           if (index != -1) {
             _groups[index] = updatedGroup;
-            print('AppProvider: 已更新内存中的群组状态: ${updatedGroup.status}');
+            DebugLogger().info(
+              'AppProvider: 已更新内存中的群组状态: ${updatedGroup.status}',
+              tag: 'APP_PROVIDER',
+            );
           }
         }
         notifyListeners();
-        print('AppProvider: 重新连接成功，返回 true');
+        DebugLogger().info('AppProvider: 重新连接成功，返回 true', tag: 'APP_PROVIDER');
         return true;
       } else {
         _setError('重新连接群组失败');
-        print('AppProvider: 重新连接失败，返回 false');
+        DebugLogger().info('AppProvider: 重新连接失败，返回 false', tag: 'APP_PROVIDER');
         return false;
       }
     } catch (e) {
       _setError('重新连接群组失败: $e');
-      print('AppProvider: 重新连接异常: $e，返回 false');
+      DebugLogger().error(
+        'AppProvider: 重新连接异常: $e，返回 false',
+        tag: 'APP_PROVIDER',
+      );
       return false;
     } finally {
       _setLoading(false);
-      print('AppProvider: 重新连接方法结束');
+      DebugLogger().info('AppProvider: 重新连接方法结束', tag: 'APP_PROVIDER');
     }
   }
 
@@ -872,7 +937,7 @@ class AppProvider with ChangeNotifier {
     try {
       return await GroupService().checkGroupConnectionStatus(group);
     } catch (e) {
-      print('检查群组连接状态失败: $e');
+      DebugLogger().error('检查群组连接状态失败: $e', tag: 'APP_PROVIDER');
       return false;
     }
   }
@@ -892,7 +957,7 @@ class AppProvider with ChangeNotifier {
 
     _setLoading(true);
     try {
-      print('开始重启群组服务器: ${group.name}');
+      DebugLogger().info('开始重启群组服务器: ${group.name}', tag: 'APP_PROVIDER');
 
       // 停止当前服务器
       P2PService.stopServer();

@@ -7,6 +7,7 @@ import 'create_group_screen.dart';
 import 'join_group_screen.dart';
 import 'group_qr_screen.dart';
 import '../services/group_service.dart';
+import '../utils/debug_logger.dart';
 
 class GroupListScreen extends StatefulWidget {
   const GroupListScreen({super.key});
@@ -231,15 +232,23 @@ class _GroupListScreenState extends State<GroupListScreen> {
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        '${group.memberCount} 个成员 • ${group.description}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: group.status == GroupStatus.unavailable
-                              ? Colors.grey
-                              : null,
-                        ),
+                      Consumer<AppProvider>(
+                        builder: (context, appProvider, child) {
+                          final updatedGroup = appProvider.groups.firstWhere(
+                            (g) => g.id == group.id,
+                            orElse: () => group,
+                          );
+                          return Text(
+                            '${updatedGroup.memberCount} 个成员 • ${updatedGroup.description}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: group.status == GroupStatus.unavailable
+                                  ? Colors.grey
+                                  : null,
+                            ),
+                          );
+                        },
                       ),
                       if (group.status == GroupStatus.unavailable)
                         const Text(
@@ -862,51 +871,25 @@ class _GroupListScreenState extends State<GroupListScreen> {
 
   Future<void> _performLogout() async {
     final appProvider = context.read<AppProvider>();
-
     try {
-      // 显示加载对话框
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 16),
-              Text('正在注销...'),
-            ],
-          ),
-        ),
-      );
-
-      // 执行注销操作
       final success = await appProvider.logout();
-
-      // 关闭加载对话框
-      Navigator.pop(context);
-
+      if (!mounted) return;
       if (success) {
-        // 显示成功消息
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('注销成功，请重新启动应用')));
-
-        // 延迟后退出应用
-        Future.delayed(const Duration(seconds: 2), () {
-          // 在Flutter中，我们无法直接退出应用，但可以清空所有数据
-          // 用户需要手动重启应用
-        });
+        // 这里可以考虑跳转到登录页或主界面
       } else {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(appProvider.error ?? '注销失败')));
       }
     } catch (e) {
-      // 关闭加载对话框
-      Navigator.pop(context);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('注销失败: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('注销失败: $e')));
+      }
     }
   }
 
@@ -934,7 +917,7 @@ class _GroupListScreenState extends State<GroupListScreen> {
 
     if (confirmed != true) return;
 
-    print('UI: 开始重新连接群组');
+    DebugLogger().info('UI: 开始重新连接群组', tag: 'GROUP_LIST');
 
     // 设置重新连接状态
     setState(() {
@@ -952,16 +935,22 @@ class _GroupListScreenState extends State<GroupListScreen> {
 
     // 在后台执行重新连接
     try {
-      print('UI: 开始调用AppProvider.reconnectToGroup');
+      DebugLogger().info(
+        'UI: 开始调用AppProvider.reconnectToGroup',
+        tag: 'GROUP_LIST',
+      );
 
       // 执行重新连接
       final success = await appProvider.reconnectToGroup(group);
 
-      print('UI: AppProvider.reconnectToGroup 返回结果: $success');
+      DebugLogger().info(
+        'UI: AppProvider.reconnectToGroup 返回结果: $success',
+        tag: 'GROUP_LIST',
+      );
 
       // 检查Widget是否仍然挂载
       if (!mounted) {
-        print('UI: Widget已卸载，不执行UI操作');
+        DebugLogger().info('UI: Widget已卸载，不执行UI操作', tag: 'GROUP_LIST');
         return;
       }
 
@@ -971,7 +960,7 @@ class _GroupListScreenState extends State<GroupListScreen> {
       });
 
       if (success) {
-        print('UI: 显示成功提示');
+        DebugLogger().info('UI: 显示成功提示', tag: 'GROUP_LIST');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('群组"${group.name}"重新连接成功'),
@@ -979,7 +968,7 @@ class _GroupListScreenState extends State<GroupListScreen> {
           ),
         );
       } else {
-        print('UI: 显示失败提示');
+        DebugLogger().info('UI: 显示失败提示', tag: 'GROUP_LIST');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('群组"${group.name}"重新连接失败，请检查网络连接或联系群组创建者'),
@@ -988,11 +977,11 @@ class _GroupListScreenState extends State<GroupListScreen> {
         );
       }
     } catch (e) {
-      print('UI: 重新连接过程中发生异常: $e');
+      DebugLogger().error('UI: 重新连接过程中发生异常: $e', tag: 'GROUP_LIST');
 
       // 检查Widget是否仍然挂载
       if (!mounted) {
-        print('UI: Widget已卸载，不执行UI操作');
+        DebugLogger().info('UI: Widget已卸载，不执行UI操作', tag: 'GROUP_LIST');
         return;
       }
 
@@ -1031,7 +1020,7 @@ class _GroupListScreenState extends State<GroupListScreen> {
 
     if (confirmed != true) return;
 
-    print('UI: 开始重启群组服务器');
+    DebugLogger().info('UI: 开始重启群组服务器', tag: 'GROUP_LIST');
 
     // 设置重新连接状态
     setState(() {
@@ -1049,16 +1038,22 @@ class _GroupListScreenState extends State<GroupListScreen> {
 
     // 在后台执行重启服务器
     try {
-      print('UI: 开始调用AppProvider.restartGroupServer');
+      DebugLogger().info(
+        'UI: 开始调用AppProvider.restartGroupServer',
+        tag: 'GROUP_LIST',
+      );
 
       // 执行重启服务器
       final success = await appProvider.restartGroupServer(group);
 
-      print('UI: AppProvider.restartGroupServer 返回结果: $success');
+      DebugLogger().info(
+        'UI: AppProvider.restartGroupServer 返回结果: $success',
+        tag: 'GROUP_LIST',
+      );
 
       // 检查Widget是否仍然挂载
       if (!mounted) {
-        print('UI: Widget已卸载，不执行UI操作');
+        DebugLogger().info('UI: Widget已卸载，不执行UI操作', tag: 'GROUP_LIST');
         return;
       }
 
@@ -1068,7 +1063,7 @@ class _GroupListScreenState extends State<GroupListScreen> {
       });
 
       if (success) {
-        print('UI: 显示重启成功提示');
+        DebugLogger().info('UI: 显示重启成功提示', tag: 'GROUP_LIST');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('群组服务器"${group.name}"重启成功'),
@@ -1076,7 +1071,7 @@ class _GroupListScreenState extends State<GroupListScreen> {
           ),
         );
       } else {
-        print('UI: 显示重启失败提示');
+        DebugLogger().info('UI: 显示重启失败提示', tag: 'GROUP_LIST');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('群组服务器"${group.name}"重启失败'),
@@ -1085,11 +1080,11 @@ class _GroupListScreenState extends State<GroupListScreen> {
         );
       }
     } catch (e) {
-      print('UI: 重启服务器过程中发生异常: $e');
+      DebugLogger().error('UI: 重启服务器过程中发生异常: $e', tag: 'GROUP_LIST');
 
       // 检查Widget是否仍然挂载
       if (!mounted) {
-        print('UI: Widget已卸载，不执行UI操作');
+        DebugLogger().info('UI: Widget已卸载，不执行UI操作', tag: 'GROUP_LIST');
         return;
       }
 

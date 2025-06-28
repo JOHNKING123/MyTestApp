@@ -3,8 +3,9 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 import '../models/message.dart';
 import '../models/group.dart';
-import 'encryption_service.dart';
-import 'storage_service.dart';
+import '../services/encryption_service.dart';
+import '../services/storage_service.dart';
+import '../utils/debug_logger.dart';
 import 'p2p_service.dart';
 
 /// 消息管理器
@@ -27,12 +28,12 @@ class MessageService {
     String senderId,
   ) async {
     try {
-      print('MessageService: 发送消息到群组 $groupId');
+      DebugLogger().info('MessageService: 发送消息到群组 $groupId', tag: 'MESSAGE');
 
       // 获取群组信息
       final group = await StorageService.loadGroup(groupId);
       if (group == null) {
-        print('MessageService: 群组不存在 $groupId');
+        DebugLogger().error('MessageService: 群组不存在 $groupId', tag: 'MESSAGE');
         return null;
       }
 
@@ -95,10 +96,10 @@ class MessageService {
       // 触发消息更新回调
       onMessageUpdated?.call(groupId);
 
-      print('MessageService: 消息发送成功 $messageId');
+      DebugLogger().info('MessageService: 消息发送成功 $messageId', tag: 'MESSAGE');
       return message;
     } catch (e) {
-      print('MessageService: 发送消息失败 $e');
+      DebugLogger().error('MessageService: 发送消息失败 $e', tag: 'MESSAGE');
       return null;
     }
   }
@@ -109,21 +110,21 @@ class MessageService {
     Map<String, dynamic> encryptedMessage,
   ) async {
     try {
-      print('MessageService: 接收消息');
+      DebugLogger().info('MessageService: 接收消息', tag: 'MESSAGE');
 
       // 解析网络消息
       final networkMessage = NetworkMessage.fromJson(encryptedMessage);
 
       // 检查重放攻击
       if (_isReplayAttack(networkMessage)) {
-        print('MessageService: 检测到重放攻击，忽略消息');
+        DebugLogger().warning('MessageService: 检测到重放攻击，忽略消息', tag: 'MESSAGE');
         return null;
       }
 
       // 获取群组信息
       final group = await StorageService.loadGroup(groupId);
       if (group == null) {
-        print('MessageService: 群组不存在 $groupId');
+        DebugLogger().error('MessageService: 群组不存在 $groupId', tag: 'MESSAGE');
         return null;
       }
 
@@ -167,10 +168,13 @@ class MessageService {
       onMessageReceived?.call(groupId, message);
       onMessageUpdated?.call(groupId);
 
-      print('MessageService: 消息接收成功 ${message.id}');
+      DebugLogger().info(
+        'MessageService: 消息接收成功 ${message.id}',
+        tag: 'MESSAGE',
+      );
       return message;
     } catch (e) {
-      print('MessageService: 接收消息失败 $e');
+      DebugLogger().error('MessageService: 接收消息失败 $e', tag: 'MESSAGE');
       return null;
     }
   }
@@ -203,7 +207,7 @@ class MessageService {
 
       return storedMessages;
     } catch (e) {
-      print('MessageService: 获取消息失败 $e');
+      DebugLogger().error('MessageService: 获取消息失败 $e', tag: 'MESSAGE');
       return [];
     }
   }
@@ -222,7 +226,7 @@ class MessageService {
 
       return results;
     } catch (e) {
-      print('MessageService: 搜索消息失败 $e');
+      DebugLogger().error('MessageService: 搜索消息失败 $e', tag: 'MESSAGE');
       return [];
     }
   }
@@ -245,7 +249,7 @@ class MessageService {
 
       return success;
     } catch (e) {
-      print('MessageService: 删除消息失败 $e');
+      DebugLogger().error('MessageService: 删除消息失败 $e', tag: 'MESSAGE');
       return false;
     }
   }
@@ -287,7 +291,7 @@ class MessageService {
 
       return false;
     } catch (e) {
-      print('MessageService: 标记消息已读失败 $e');
+      DebugLogger().error('MessageService: 标记消息已读失败 $e', tag: 'MESSAGE');
       return false;
     }
   }
@@ -343,14 +347,14 @@ class MessageService {
   void clearGroupMessages(String groupId) {
     _groupMessages.remove(groupId);
     _sequenceNumbers.remove(groupId);
-    print('MessageService: 清空群组 $groupId 消息缓存');
+    DebugLogger().info('MessageService: 清空群组 $groupId 消息缓存', tag: 'MESSAGE');
   }
 
   /// 清空所有消息缓存
   void clearAllMessages() {
     _groupMessages.clear();
     _sequenceNumbers.clear();
-    print('MessageService: 清空所有消息缓存');
+    DebugLogger().info('MessageService: 清空所有消息缓存', tag: 'MESSAGE');
   }
 
   /// 获取群组消息数量

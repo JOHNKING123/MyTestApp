@@ -44,12 +44,20 @@ class _ChatScreenState extends State<ChatScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(widget.group.name),
-            Text(
-              '${widget.group.memberCount} 个成员',
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.normal,
-              ),
+            Consumer<AppProvider>(
+              builder: (context, appProvider, child) {
+                final group = appProvider.groups.firstWhere(
+                  (g) => g.id == widget.group.id,
+                  orElse: () => widget.group,
+                );
+                return Text(
+                  '${group.memberCount} 个成员',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.normal,
+                  ),
+                );
+              },
             ),
           ],
         ),
@@ -328,7 +336,15 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             Text('群组ID: ${widget.group.id}'),
             Text('创建者: ${widget.group.creatorId}'),
-            Text('成员数: ${widget.group.memberCount}'),
+            Consumer<AppProvider>(
+              builder: (context, appProvider, child) {
+                final group = appProvider.groups.firstWhere(
+                  (g) => g.id == widget.group.id,
+                  orElse: () => widget.group,
+                );
+                return Text('成员数: ${group.memberCount}');
+              },
+            ),
             Text('创建时间: ${_formatTime(widget.group.createdAt)}'),
             if (isCreator)
               Container(

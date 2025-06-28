@@ -12,21 +12,29 @@ import '../models/message.dart';
 import '../models/member.dart';
 import 'storage_service_hive.dart';
 import 'dart:io' show Platform;
+import '../utils/debug_logger.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class StorageService {
   // --- 统一接口 ---
   static Future<bool> saveUser(User user) async {
-    print(
-      '[存储] 开始保存用户: id=${user.id}, name=${user.name}, deviceId=${user.deviceId}',
-    );
-    if (kIsWeb) {
-      final result = await StorageServiceHive.saveUser(user);
-      print('[存储] Web端保存用户结果: $result');
-      return result;
-    } else {
-      final result = await _saveUserNative(user);
-      print('[存储] Native端保存用户结果: $result');
-      return result;
+    try {
+      if (kIsWeb) {
+        // Web端使用SharedPreferences
+        final prefs = await SharedPreferences.getInstance();
+        final userData = jsonEncode(user.toJson());
+        final result = await prefs.setString('user_${user.deviceId}', userData);
+        DebugLogger().info('[存储] Web端保存用户结果: $result', tag: 'STORAGE');
+        return result;
+      } else {
+        // Native端使用SQLite
+        final result = await _saveUserToSQLite(user);
+        DebugLogger().info('[存储] Native端保存用户结果: $result', tag: 'STORAGE');
+        return result;
+      }
+    } catch (e) {
+      DebugLogger().error('[存储] 保存用户失败: $e', tag: 'STORAGE');
+      return false;
     }
   }
 
@@ -34,21 +42,42 @@ class StorageService {
     if (kIsWeb) {
       return StorageServiceHive.loadUser(userId);
     } else {
-      return _loadUserNative(userId);
+      return _loadUserFromSQLite(userId);
     }
   }
 
   /// 根据设备ID查找用户
   static Future<User?> loadUserByDeviceId(String deviceId) async {
-    print('[存储] 开始根据设备ID查找用户: deviceId=$deviceId');
-    if (kIsWeb) {
-      final user = await StorageServiceHive.loadUserByDeviceId(deviceId);
-      print('[存储] Web端查找用户结果: ${user != null ? "找到" : "未找到"}');
-      return user;
-    } else {
-      final user = await _loadUserByDeviceIdNative(deviceId);
-      print('[存储] Native端查找用户结果: ${user != null ? "找到" : "未找到"}');
-      return user;
+    try {
+      DebugLogger().info(
+        '[存储] 开始根据设备ID查找用户: deviceId=$deviceId',
+        tag: 'STORAGE',
+      );
+
+      if (kIsWeb) {
+        // Web端使用SharedPreferences
+        final prefs = await SharedPreferences.getInstance();
+        final userData = prefs.getString('user_$deviceId');
+        final user = userData != null
+            ? User.fromJson(jsonDecode(userData))
+            : null;
+        DebugLogger().info(
+          '[存储] Web端查找用户结果: ${user != null ? "找到" : "未找到"}',
+          tag: 'STORAGE',
+        );
+        return user;
+      } else {
+        // Native端使用SQLite
+        final user = await _loadUserFromSQLite(deviceId);
+        DebugLogger().info(
+          '[存储] Native端查找用户结果: ${user != null ? "找到" : "未找到"}',
+          tag: 'STORAGE',
+        );
+        return user;
+      }
+    } catch (e) {
+      DebugLogger().error('[存储] 加载用户失败: $e', tag: 'STORAGE');
+      return null;
     }
   }
 
@@ -77,7 +106,7 @@ class StorageService {
   }
 
   static Future<bool> saveMessage(String groupId, Message message) async {
-    print('kIsWeb: $kIsWeb');
+    DebugLogger().debug('kIsWeb: $kIsWeb', tag: 'STORAGE');
     if (kIsWeb) {
       return StorageServiceHive.saveMessage(groupId, message);
     } else {
@@ -150,27 +179,28 @@ class StorageService {
   /// 重置数据库（删除数据库文件重新创建）
   static Future<bool> resetDatabase() async {
     try {
-      print('[存储] 开始重置数据库...');
+      DebugLogger().info('[存储] 开始重置数据库...', tag: 'STORAGE');
+
       if (kIsWeb) {
-        // Web端清除所有Hive数据
-        await StorageServiceHive.clearAllData();
-        print('[存储] Web端数据库重置完成');
+        // Web端清空SharedPreferences
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.clear();
+        DebugLogger().info('[存储] Web端数据库重置完成', tag: 'STORAGE');
         return true;
       } else {
-        // Native端删除数据库文件
-        final path = join(await getDatabasesPath(), 'secure_chat.db');
-        final file = File(path);
+        // Native端删除SQLite数据库文件
+        final path = await getDatabasesPath();
+        final dbPath = join(path, 'mytestapp.db');
+        final file = File(dbPath);
         if (await file.exists()) {
+          DebugLogger().info('[存储] 删除数据库文件: $path', tag: 'STORAGE');
           await file.delete();
-          print('[存储] 删除数据库文件: $path');
         }
-        // 重新初始化数据库
-        await database;
-        print('[存储] Native端数据库重置完成');
+        DebugLogger().info('[存储] Native端数据库重置完成', tag: 'STORAGE');
         return true;
       }
     } catch (e) {
-      print('[存储] 重置数据库失败: $e');
+      DebugLogger().error('[存储] 重置数据库失败: $e', tag: 'STORAGE');
       return false;
     }
   }
@@ -220,7 +250,8 @@ class StorageService {
         createdAt TEXT NOT NULL,
         status TEXT NOT NULL,
         lastActiveAt TEXT NOT NULL,
-        deviceId TEXT NOT NULL
+        deviceId TEXT NOT NULL,
+        sessionTokens TEXT
       )
     ''');
 
@@ -279,95 +310,90 @@ class StorageService {
   }
 
   /// 保存用户（Native实现）
-  static Future<bool> _saveUserNative(User user) async {
+  static Future<bool> _saveUserToSQLite(User user) async {
     try {
-      print('[Native] 开始保存用户到SQLite: id=${user.id}, deviceId=${user.deviceId}');
       final db = await database;
-      await db.insert('users', {
-        'id': user.id,
-        'name': user.name,
-        'deviceId': user.deviceId,
-        'profile': jsonEncode(user.profile.toJson()),
-        'createdAt': user.createdAt.toIso8601String(),
-        'status': user.status.toString().split('.').last,
-        'lastActiveAt': user.lastActiveAt.toIso8601String(),
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-      print('[Native] 用户保存到SQLite成功');
-      return true;
+      DebugLogger().info(
+        '[Native] 开始保存用户到SQLite: id=${user.id}, deviceId=${user.deviceId}',
+        tag: 'STORAGE',
+      );
+
+      final result = await db.insert(
+        'users',
+        user.toJson(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+
+      DebugLogger().info('[Native] 用户保存到SQLite成功', tag: 'STORAGE');
+      return result > 0;
     } catch (e) {
-      print('[Native] 保存用户到SQLite失败: $e');
+      DebugLogger().error('[Native] 保存用户到SQLite失败: $e', tag: 'STORAGE');
       return false;
     }
   }
 
   /// 加载用户
-  static Future<User?> _loadUserNative(String userId) async {
+  static Future<User?> _loadUserFromSQLite(String deviceId) async {
     try {
       final db = await database;
-      final maps = await db.query(
-        'users',
-        where: 'id = ?',
-        whereArgs: [userId],
+      DebugLogger().info(
+        '[Native] 开始从SQLite查找用户: deviceId=$deviceId',
+        tag: 'STORAGE',
       );
 
-      if (maps.isEmpty) return null;
-
-      final map = maps.first;
-      final profileJson = jsonDecode(map['profile'] as String);
-
-      return User(
-        id: map['id'] as String,
-        name: map['name'] as String,
-        profile: UserProfile.fromJson(profileJson),
-        createdAt: DateTime.parse(map['createdAt'] as String),
-        status: UserStatus.values.firstWhere(
-          (e) => e.toString() == 'UserStatus.${map['status']}',
-          orElse: () => UserStatus.active,
-        ),
-        lastActiveAt: DateTime.parse(map['lastActiveAt'] as String),
-        deviceId: map['deviceId'] as String,
-      );
-    } catch (e) {
-      print('Failed to load user: $e');
-      return null;
-    }
-  }
-
-  /// 根据设备ID加载用户（Native实现）
-  static Future<User?> _loadUserByDeviceIdNative(String deviceId) async {
-    try {
-      print('[Native] 开始从SQLite查找用户: deviceId=$deviceId');
-      final db = await database;
-      final maps = await db.query(
+      final List<Map<String, dynamic>> maps = await db.query(
         'users',
         where: 'deviceId = ?',
         whereArgs: [deviceId],
       );
-      print('[Native] SQLite查询结果: ${maps.length} 条记录');
+
+      DebugLogger().info(
+        '[Native] SQLite查询结果: ${maps.length} 条记录',
+        tag: 'STORAGE',
+      );
 
       if (maps.isNotEmpty) {
-        final map = maps.first;
-        final profileJson = jsonDecode(map['profile'] as String);
-        final user = User(
-          id: map['id'] as String,
-          name: map['name'] as String,
-          profile: UserProfile.fromJson(profileJson),
-          createdAt: DateTime.parse(map['createdAt'] as String),
-          status: UserStatus.values.firstWhere(
-            (e) => e.toString() == 'UserStatus.${map['status']}',
-            orElse: () => UserStatus.active,
-          ),
-          lastActiveAt: DateTime.parse(map['lastActiveAt'] as String),
-          deviceId: map['deviceId'] as String,
+        final userMap = maps.first;
+
+        // 处理需要JSON解析的字段
+        final processedMap = <String, dynamic>{
+          'id': userMap['id'],
+          'name': userMap['name'],
+          'createdAt': userMap['createdAt'],
+          'status': userMap['status'],
+          'lastActiveAt': userMap['lastActiveAt'],
+          'deviceId': userMap['deviceId'],
+          'sessionTokens': userMap['sessionTokens'] != null
+              ? List<String>.from(jsonDecode(userMap['sessionTokens']))
+              : [],
+        };
+
+        // 解析profile字段
+        if (userMap['profile'] is String) {
+          try {
+            final profileJson = jsonDecode(userMap['profile'] as String);
+            processedMap['profile'] = profileJson;
+          } catch (e) {
+            DebugLogger().error('[Native] 解析profile字段失败: $e', tag: 'STORAGE');
+            // 使用默认profile
+            processedMap['profile'] = {'publicKey': '', 'customFields': {}};
+          }
+        } else {
+          processedMap['profile'] = userMap['profile'];
+        }
+
+        final user = User.fromJson(processedMap);
+        DebugLogger().info(
+          '[Native] 成功解析用户: id=${user.id}, name=${user.name}',
+          tag: 'STORAGE',
         );
-        print('[Native] 成功解析用户: id=${user.id}, name=${user.name}');
         return user;
       } else {
-        print('[Native] 未找到用户记录');
+        DebugLogger().info('[Native] 未找到用户记录', tag: 'STORAGE');
         return null;
       }
     } catch (e) {
-      print('[Native] 从SQLite加载用户失败: $e');
+      DebugLogger().error('[Native] 从SQLite加载用户失败: $e', tag: 'STORAGE');
       return null;
     }
   }
@@ -416,7 +442,7 @@ class StorageService {
 
       return true;
     } catch (e) {
-      print('Failed to save group: $e');
+      DebugLogger().error('Failed to save group: $e', tag: 'STORAGE');
       return false;
     }
   }
@@ -504,7 +530,7 @@ class StorageService {
         ),
       );
     } catch (e) {
-      print('Failed to load group: $e');
+      DebugLogger().error('Failed to load group: $e', tag: 'STORAGE');
       return null;
     }
   }
@@ -525,7 +551,7 @@ class StorageService {
 
       return groups;
     } catch (e) {
-      print('Failed to load all groups: $e');
+      DebugLogger().error('Failed to load all groups: $e', tag: 'STORAGE');
       return [];
     }
   }
@@ -555,7 +581,7 @@ class StorageService {
       }, conflictAlgorithm: ConflictAlgorithm.replace);
       return true;
     } catch (e) {
-      print('Failed to save message: $e');
+      DebugLogger().error('Failed to save message: $e', tag: 'STORAGE');
       return false;
     }
   }
@@ -611,7 +637,7 @@ class StorageService {
 
       return messages;
     } catch (e) {
-      print('Failed to load messages: $e');
+      DebugLogger().error('Failed to load messages: $e', tag: 'STORAGE');
       return [];
     }
   }
@@ -630,7 +656,7 @@ class StorageService {
       );
       return true;
     } catch (e) {
-      print('Failed to delete message: $e');
+      DebugLogger().error('Failed to delete message: $e', tag: 'STORAGE');
       return false;
     }
   }
@@ -683,7 +709,7 @@ class StorageService {
 
       return messages;
     } catch (e) {
-      print('Failed to search messages: $e');
+      DebugLogger().error('Failed to search messages: $e', tag: 'STORAGE');
       return [];
     }
   }
@@ -698,7 +724,7 @@ class StorageService {
       await db.delete('messages');
       return true;
     } catch (e) {
-      print('Failed to clear all data: $e');
+      DebugLogger().error('Failed to clear all data: $e', tag: 'STORAGE');
       return false;
     }
   }
@@ -712,7 +738,10 @@ class StorageService {
       await db.delete('messages');
       return true;
     } catch (e) {
-      print('Failed to clear groups and messages: $e');
+      DebugLogger().error(
+        'Failed to clear groups and messages: $e',
+        tag: 'STORAGE',
+      );
       return false;
     }
   }
@@ -720,7 +749,7 @@ class StorageService {
   /// 删除指定群组（Native实现）
   static Future<bool> _deleteGroupNative(String groupId) async {
     try {
-      print('[Native] 开始删除群组: $groupId');
+      DebugLogger().info('[Native] 开始删除群组: $groupId', tag: 'STORAGE');
       final db = await database;
 
       // 删除群组
@@ -729,10 +758,10 @@ class StorageService {
       // 删除群组成员
       await db.delete('members', where: 'groupId = ?', whereArgs: [groupId]);
 
-      print('[Native] 群组删除成功: $groupId');
+      DebugLogger().info('[Native] 群组删除成功: $groupId', tag: 'STORAGE');
       return true;
     } catch (e) {
-      print('[Native] 删除群组失败: $e');
+      DebugLogger().error('[Native] 删除群组失败: $e', tag: 'STORAGE');
       return false;
     }
   }
@@ -740,15 +769,15 @@ class StorageService {
   /// 删除指定群组的所有消息（Native实现）
   static Future<bool> _deleteGroupMessagesNative(String groupId) async {
     try {
-      print('[Native] 开始删除群组消息: $groupId');
+      DebugLogger().info('[Native] 开始删除群组消息: $groupId', tag: 'STORAGE');
       final db = await database;
 
       await db.delete('messages', where: 'groupId = ?', whereArgs: [groupId]);
 
-      print('[Native] 群组消息删除成功: $groupId');
+      DebugLogger().info('[Native] 群组消息删除成功: $groupId', tag: 'STORAGE');
       return true;
     } catch (e) {
-      print('[Native] 删除群组消息失败: $e');
+      DebugLogger().error('[Native] 删除群组消息失败: $e', tag: 'STORAGE');
       return false;
     }
   }

@@ -7,6 +7,7 @@ import '../models/group.dart';
 import '../models/message.dart';
 import '../models/user.dart';
 import 'group_service.dart';
+import '../utils/debug_logger.dart';
 
 /// 连接断开回调函数类型
 typedef ConnectionDisconnectCallback =
@@ -181,7 +182,7 @@ class P2PConnection {
     // 检查心跳时间（允许更长的超时时间）
     final heartbeatTimeout = Duration(seconds: 30);
     if (DateTime.now().difference(lastHeartbeat) > heartbeatTimeout) {
-      print('连接 ${connectionId} 心跳超时');
+      DebugLogger().info('连接 ${connectionId} 心跳超时', tag: 'P2P');
       status = ConnectionStatus.error;
       return false;
     }
@@ -192,7 +193,7 @@ class P2PConnection {
   bool sendMessage(String message) {
     try {
       if (status != ConnectionStatus.connected) {
-        print('连接 ${connectionId} 状态不正确: $status');
+        DebugLogger().info('连接 ${connectionId} 状态不正确: $status', tag: 'P2P');
         return false;
       }
 
@@ -203,7 +204,7 @@ class P2PConnection {
     } catch (e) {
       lastError = e.toString();
       status = ConnectionStatus.error;
-      print('发送消息失败: $e');
+      DebugLogger().error('发送消息失败: $e', tag: 'P2P');
       return false;
     }
   }
@@ -225,14 +226,17 @@ class MessageRouter {
     final connections = P2PService.getConnectionsByGroup(groupId);
     final senderId = message['senderId'];
 
-    print('广播消息到群组 $groupId，连接数: ${connections.length}，发送者: $senderId');
+    DebugLogger().info(
+      '广播消息到群组 $groupId，连接数: ${connections.length}，发送者: $senderId',
+      tag: 'P2P',
+    );
 
     // 检查是否有有效连接
     final aliveConnections = connections
         .where((conn) => conn.isAlive())
         .toList();
     if (aliveConnections.isEmpty) {
-      print('群组 $groupId 没有活跃连接，消息无法发送');
+      DebugLogger().info('群组 $groupId 没有活跃连接，消息无法发送', tag: 'P2P');
       return;
     }
 
@@ -243,15 +247,22 @@ class MessageRouter {
       try {
         final success = connection.sendMessage(messageStr);
         if (!success) {
-          print('发送消息到连接 ${connection.connectionId} 失败');
+          DebugLogger().info(
+            '发送消息到连接 ${connection.connectionId} 失败',
+            tag: 'P2P',
+          );
           P2PService.removeConnection(connection.connectionId);
         } else {
-          print(
+          DebugLogger().info(
             '消息发送成功到连接: ${connection.connectionId} (用户: ${connection.userId})',
+            tag: 'P2P',
           );
         }
       } catch (e) {
-        print('发送消息到连接 ${connection.connectionId} 出错: $e');
+        DebugLogger().error(
+          '发送消息到连接 ${connection.connectionId} 出错: $e',
+          tag: 'P2P',
+        );
         P2PService.removeConnection(connection.connectionId);
       }
     }
@@ -271,7 +282,7 @@ class MessageRouter {
         .toList();
 
     if (userConnections.isEmpty) {
-      print('用户 $userId 在群组 $groupId 中没有活跃连接');
+      DebugLogger().info('用户 $userId 在群组 $groupId 中没有活跃连接', tag: 'P2P');
       return;
     }
 
@@ -280,14 +291,17 @@ class MessageRouter {
     try {
       final success = connection.sendMessage(messageStr);
       if (success) {
-        print('消息发送成功到用户: $userId (连接: ${connection.connectionId})');
+        DebugLogger().info(
+          '消息发送成功到用户: $userId (连接: ${connection.connectionId})',
+          tag: 'P2P',
+        );
         return;
       } else {
-        print('发送消息到用户 $userId 失败');
+        DebugLogger().info('发送消息到用户 $userId 失败', tag: 'P2P');
         P2PService.removeConnection(connection.connectionId);
       }
     } catch (e) {
-      print('发送消息到用户 $userId 出错: $e');
+      DebugLogger().error('发送消息到用户 $userId 出错: $e', tag: 'P2P');
       P2PService.removeConnection(connection.connectionId);
     }
   }
@@ -297,14 +311,14 @@ class MessageRouter {
 
     // 优先处理心跳消息，不取groupId
     if (messageType == NetworkMessage.TYPE_HEARTBEAT) {
-      print('收到心跳消息，直接处理');
+      DebugLogger().info('收到心跳消息，直接处理', tag: 'P2P');
       _handleHeartbeat(message);
       return;
     }
 
     // 其他类型消息需要groupId
     final groupId = message['groupId'] as String?;
-    print('路由消息: type=$messageType, groupId=$groupId');
+    DebugLogger().info('路由消息: type=$messageType, groupId=$groupId', tag: 'P2P');
 
     switch (messageType) {
       case NetworkMessage.TYPE_CHAT_MESSAGE:
@@ -331,8 +345,13 @@ class MessageRouter {
           broadcastToGroup(groupId, message);
         }
         break;
+      case NetworkMessage.TYPE_GROUP_UPDATE:
+        if (groupId != null && groupId.isNotEmpty) {
+          broadcastToGroup(groupId, message);
+        }
+        break;
       default:
-        print('未知消息类型: $messageType');
+        DebugLogger().info('未知消息类型: $messageType', tag: 'P2P');
     }
   }
 
@@ -340,7 +359,7 @@ class MessageRouter {
     // 处理加入请求的逻辑
     final senderId = message['senderId'];
     final groupId = message['groupId'];
-    print('处理加入请求: $senderId -> $groupId');
+    DebugLogger().info('处理加入请求: $senderId -> $groupId', tag: 'P2P');
   }
 
   static void _handleHeartbeat(Map<String, dynamic> message) {
@@ -349,7 +368,7 @@ class MessageRouter {
     for (final connection in connections.values) {
       connection.updateHeartbeat();
     }
-    print('心跳消息处理成功，更新了 ${connections.length} 个连接的心跳');
+    DebugLogger().info('心跳消息处理成功，更新了 ${connections.length} 个连接的心跳', tag: 'P2P');
   }
 }
 
@@ -362,8 +381,9 @@ class ConnectionManager {
   static void addConnection(P2PConnection connection) {
     _connections[connection.connectionId] = connection;
     connection.status = ConnectionStatus.connected;
-    print(
+    DebugLogger().info(
       '添加连接: ${connection.connectionId} (用户: ${connection.userId}, 群组: ${connection.groupId})',
+      tag: 'P2P',
     );
   }
 
@@ -371,7 +391,7 @@ class ConnectionManager {
     final connection = _connections.remove(connectionId);
     if (connection != null) {
       connection.close();
-      print('移除连接: $connectionId');
+      DebugLogger().info('移除连接: $connectionId', tag: 'P2P');
     }
   }
 
@@ -409,7 +429,10 @@ class ConnectionManager {
         try {
           connection.sendMessage(messageStr);
         } catch (e) {
-          print('发送心跳到 ${connection.connectionId} 失败: $e');
+          DebugLogger().error(
+            '发送心跳到 ${connection.connectionId} 失败: $e',
+            tag: 'P2P',
+          );
         }
       }
     }
@@ -429,7 +452,7 @@ class ConnectionManager {
       final connection = entry.value;
       if (!connection.isAlive()) {
         deadConnections.add(entry.key);
-        print('标记死连接: ${connection.connectionId}');
+        DebugLogger().info('标记死连接: ${connection.connectionId}', tag: 'P2P');
       }
     }
 
@@ -438,7 +461,7 @@ class ConnectionManager {
     }
 
     if (deadConnections.isNotEmpty) {
-      print('清理了 ${deadConnections.length} 个死连接');
+      DebugLogger().info('清理了 ${deadConnections.length} 个死连接', tag: 'P2P');
     }
   }
 
@@ -470,24 +493,27 @@ class ConnectionManager {
 class NetworkUtils {
   static Future<String> getLocalIP() async {
     try {
-      print('正在获取本地IP地址...');
+      DebugLogger().info('正在获取本地IP地址...', tag: 'NETWORK');
       for (var interface in await NetworkInterface.list()) {
-        print('网络接口: ${interface.name}');
+        DebugLogger().debug('网络接口: ${interface.name}', tag: 'NETWORK');
         for (var addr in interface.addresses) {
-          print('  - ${addr.address} (${addr.type})');
+          DebugLogger().debug(
+            '  - ${addr.address} (${addr.type})',
+            tag: 'NETWORK',
+          );
           if (addr.type == InternetAddressType.IPv4 &&
               !addr.address.startsWith('127.')) {
-            print('选择IP地址: ${addr.address}');
+            DebugLogger().info('选择IP地址: ${addr.address}', tag: 'NETWORK');
             return addr.address;
           }
         }
       }
     } catch (e) {
-      print('获取IP失败: $e');
+      DebugLogger().error('获取IP失败: $e', tag: 'NETWORK');
     }
 
     // 如果无法获取IP，使用localhost（适用于模拟器）
-    print('使用localhost地址: 127.0.0.1');
+    DebugLogger().info('使用localhost地址: 127.0.0.1', tag: 'NETWORK');
     return '127.0.0.1';
   }
 
@@ -495,6 +521,7 @@ class NetworkUtils {
     // 查找可用端口
     for (int port = 36324; port < 36400; port++) {
       if (await isPortAvailable(port)) {
+        DebugLogger().info('找到可用端口: $port', tag: 'NETWORK');
         return port;
       }
     }
@@ -513,54 +540,57 @@ class NetworkUtils {
 
   static Future<bool> testConnection(String ip, int port) async {
     try {
-      print('开始连接测试: $ip:$port');
+      DebugLogger().info('开始连接测试: $ip:$port', tag: 'NETWORK');
       final socket = await Socket.connect(
         ip,
         port,
         timeout: Duration(seconds: 5),
       );
       await socket.close();
-      print('连接测试成功: $ip:$port');
+      DebugLogger().info('连接测试成功: $ip:$port', tag: 'NETWORK');
       return true;
     } catch (e) {
-      print('连接测试失败: $ip:$port - $e');
+      DebugLogger().error('连接测试失败: $ip:$port - $e', tag: 'NETWORK');
       return false;
     }
   }
 
   static Future<bool> pingTest(String targetIP) async {
     try {
-      print('开始网络连通性测试: $targetIP');
+      DebugLogger().info('开始网络连通性测试: $targetIP', tag: 'NETWORK');
       final socket = await Socket.connect(
         targetIP,
         80,
         timeout: Duration(seconds: 3),
       );
       socket.destroy();
-      print('网络连通性测试成功: $targetIP');
+      DebugLogger().info('网络连通性测试成功: $targetIP', tag: 'NETWORK');
       return true;
     } catch (e) {
-      print('网络连通性测试失败: $targetIP - $e');
+      DebugLogger().error('网络连通性测试失败: $targetIP - $e', tag: 'NETWORK');
 
       // 如果80端口失败，尝试其他常用端口
       final testPorts = [443, 22, 36324];
       for (final port in testPorts) {
         try {
-          print('尝试连接端口 $port 进行连通性测试...');
+          DebugLogger().info('尝试连接端口 $port 进行连通性测试...', tag: 'NETWORK');
           final socket = await Socket.connect(
             targetIP,
             port,
             timeout: Duration(seconds: 2),
           );
           socket.destroy();
-          print('网络连通性测试成功: $targetIP (通过端口 $port)');
+          DebugLogger().info(
+            '网络连通性测试成功: $targetIP (通过端口 $port)',
+            tag: 'NETWORK',
+          );
           return true;
         } catch (e) {
-          print('端口 $port 连通性测试失败: $e');
+          DebugLogger().error('端口 $port 连通性测试失败: $e', tag: 'NETWORK');
         }
       }
 
-      print('所有端口连通性测试都失败，网络可能不通');
+      DebugLogger().info('所有端口连通性测试都失败，网络可能不通', tag: 'NETWORK');
       return false;
     }
   }
@@ -598,7 +628,10 @@ class P2PService {
   // 设置连接验证器
   static void setConnectionValidator(ConnectionValidator? validator) {
     onConnectionValidate = validator;
-    print('连接验证器已设置: ${validator != null ? "启用" : "禁用"}');
+    DebugLogger().info(
+      '连接验证器已设置: ${validator != null ? "启用" : "禁用"}',
+      tag: 'P2P',
+    );
   }
 
   // 获取本地IP地址
@@ -611,7 +644,7 @@ class P2PService {
   /// 启动P2P服务器
   static Future<bool> startServer([int? port]) async {
     if (_isRunning) {
-      print('P2P服务器已经启动');
+      DebugLogger().info('P2P服务器已经启动', tag: 'P2P');
       return true;
     }
 
@@ -620,12 +653,12 @@ class P2PService {
     }
 
     try {
-      print('正在启动P2P服务器...');
-      print('绑定地址: 0.0.0.0:$_port');
+      DebugLogger().info('正在启动P2P服务器...', tag: 'P2P');
+      DebugLogger().info('绑定地址: 0.0.0.0:$_port', tag: 'P2P');
 
       _server = await HttpServer.bind(InternetAddress.anyIPv4, _port);
 
-      print('P2P服务器启动成功，监听端口: $_port');
+      DebugLogger().info('P2P服务器启动成功，监听端口: $_port', tag: 'P2P');
 
       _server!.transform(WebSocketTransformer()).listen((WebSocket webSocket) {
         _handleNewConnection(webSocket);
@@ -639,10 +672,10 @@ class P2PService {
       _startTime = DateTime.now();
 
       final serverIP = await getLocalIP();
-      print('P2P服务器启动成功: $serverIP:$_port');
+      DebugLogger().info('P2P服务器启动成功: $serverIP:$_port', tag: 'P2P');
       return true;
     } catch (e) {
-      print('启动P2P服务器失败: $e');
+      DebugLogger().error('启动P2P服务器失败: $e', tag: 'P2P');
       return false;
     }
   }
@@ -650,12 +683,12 @@ class P2PService {
   /// 停止P2P服务器
   static Future<void> stopServer() async {
     if (!_isRunning) {
-      print('P2P服务器未运行');
+      DebugLogger().info('P2P服务器未运行', tag: 'P2P');
       return;
     }
 
     try {
-      print('正在停止P2P服务器...');
+      DebugLogger().info('正在停止P2P服务器...', tag: 'P2P');
 
       // 关闭所有连接
       final connections = ConnectionManager.getConnections();
@@ -674,9 +707,9 @@ class P2PService {
       _isRunning = false;
       _startTime = null;
 
-      print('P2P服务器已停止');
+      DebugLogger().info('P2P服务器已停止', tag: 'P2P');
     } catch (e) {
-      print('停止P2P服务器失败: $e');
+      DebugLogger().error('停止P2P服务器失败: $e', tag: 'P2P');
     }
   }
 
@@ -688,7 +721,10 @@ class P2PService {
     String groupId,
   ) async {
     try {
-      print('连接到P2P服务器: $serverIP:$port (用户: $userId, 群组: $groupId)');
+      DebugLogger().info(
+        '连接到P2P服务器: $serverIP:$port (用户: $userId, 群组: $groupId)',
+        tag: 'P2P',
+      );
 
       // 修复模拟器IP地址问题
       if (serverIP == '10.0.2.15') {
@@ -697,7 +733,7 @@ class P2PService {
         port = 8081;
       }
 
-      print('最终连接地址: $serverIP:$port');
+      DebugLogger().info('最终连接地址: $serverIP:$port', tag: 'P2P');
       final webSocket = await WebSocket.connect('ws://$serverIP:$port');
 
       final connectionId = _generateConnectionId();
@@ -726,7 +762,7 @@ class P2PService {
 
       final initMessageStr = jsonEncode(initMessage);
       webSocket.add(initMessageStr);
-      print('发送连接初始化消息: $initMessageStr');
+      DebugLogger().info('发送连接初始化消息: $initMessageStr', tag: 'P2P');
 
       // 添加到连接管理器
       ConnectionManager.addConnection(connection);
@@ -742,10 +778,10 @@ class P2PService {
         ),
       );
 
-      print('成功连接到P2P服务器');
+      DebugLogger().info('成功连接到P2P服务器', tag: 'P2P');
       return true;
     } catch (e) {
-      print('连接P2P服务器失败: $e');
+      DebugLogger().error('连接P2P服务器失败: $e', tag: 'P2P');
       return false;
     }
   }
@@ -769,7 +805,7 @@ class P2PService {
       onDone: () => _handleConnectionDisconnect(connection),
     );
 
-    print('新的WebSocket连接: $connectionId');
+    DebugLogger().info('新的WebSocket连接: $connectionId', tag: 'P2P');
   }
 
   /// 处理接收到的消息
@@ -778,7 +814,7 @@ class P2PService {
       final messageStr = data.toString();
       final messageData = jsonDecode(messageStr);
 
-      print('收到消息: ${messageData['type']}');
+      DebugLogger().info('收到消息: ${messageData['type']}', tag: 'P2P');
 
       // 处理连接初始化消息
       if (messageData['type'] == 'connection_init') {
@@ -793,7 +829,10 @@ class P2PService {
         for (final existingConn in existingConnections) {
           if (existingConn.userId == connection.userId &&
               existingConn.connectionId != connection.connectionId) {
-            print('发现重复连接，移除旧连接: ${existingConn.connectionId}');
+            DebugLogger().info(
+              '发现重复连接，移除旧连接: ${existingConn.connectionId}',
+              tag: 'P2P',
+            );
             ConnectionManager.removeConnection(existingConn.connectionId);
           }
         }
@@ -812,8 +851,9 @@ class P2PService {
           ),
         );
 
-        print(
+        DebugLogger().info(
           '连接已注册: ${connection.connectionId} (用户: ${connection.userId}, 群组: ${connection.groupId})',
+          tag: 'P2P',
         );
         return;
       }
@@ -831,7 +871,10 @@ class P2PService {
         for (final existingConn in existingConnections) {
           if (existingConn.userId == connection.userId &&
               existingConn.connectionId != connection.connectionId) {
-            print('发现重复连接，移除旧连接: ${existingConn.connectionId}');
+            DebugLogger().info(
+              '发现重复连接，移除旧连接: ${existingConn.connectionId}',
+              tag: 'P2P',
+            );
             ConnectionManager.removeConnection(existingConn.connectionId);
           }
         }
@@ -850,8 +893,9 @@ class P2PService {
           ),
         );
 
-        print(
+        DebugLogger().info(
           '连接已注册: ${connection.connectionId} (用户: ${connection.userId}, 群组: ${connection.groupId})',
+          tag: 'P2P',
         );
       }
 
@@ -861,7 +905,7 @@ class P2PService {
       // 检查消息是否已经处理过（防止消息循环）
       final messageId = messageData['messageId'];
       if (messageId != null && _processedMessageIds.contains(messageId)) {
-        print('消息已处理过，跳过: $messageId');
+        DebugLogger().info('消息已处理过，跳过: $messageId', tag: 'P2P');
         return;
       }
 
@@ -881,8 +925,9 @@ class P2PService {
       }
 
       // 路由消息
-      print(
+      DebugLogger().info(
         '准备路由消息: type=${messageData['type']}, groupId=${messageData['groupId']}',
+        tag: 'P2P',
       );
       MessageRouter.routeMessage(messageData);
 
@@ -891,19 +936,22 @@ class P2PService {
         final networkMessage = NetworkMessage.fromJson(messageData);
         _messageController.add(networkMessage);
       } catch (e) {
-        print('解析网络消息失败: $e');
+        DebugLogger().error('解析网络消息失败: $e', tag: 'P2P');
       }
 
       // 调用消息回调
       onMessageReceived?.call(messageData);
     } catch (e) {
-      print('p2p 处理接收消息失败: $e');
+      DebugLogger().error('p2p 处理接收消息失败: $e', tag: 'P2P');
     }
   }
 
   /// 处理连接错误
   static void _handleConnectionError(P2PConnection connection, dynamic error) {
-    print('连接错误: ${connection.connectionId} - $error');
+    DebugLogger().error(
+      '连接错误: ${connection.connectionId} - $error',
+      tag: 'P2P',
+    );
     connection.status = ConnectionStatus.error;
     connection.lastError = error.toString();
 
@@ -921,7 +969,7 @@ class P2PService {
 
   /// 处理连接断开
   static void _handleConnectionDisconnect(P2PConnection connection) {
-    print('连接断开: ${connection.connectionId}');
+    DebugLogger().info('连接断开: ${connection.connectionId}', tag: 'P2P');
     connection.status = ConnectionStatus.disconnected;
 
     // 调用断开回调
@@ -945,7 +993,10 @@ class P2PService {
       final remainingConnections = ConnectionManager.getConnectionsByGroup(
         connection.groupId,
       );
-      print('群组 ${connection.groupId} 剩余连接数: ${remainingConnections.length}');
+      DebugLogger().info(
+        '群组 ${connection.groupId} 剩余连接数: ${remainingConnections.length}',
+        tag: 'P2P',
+      );
     }
   }
 
@@ -955,7 +1006,7 @@ class P2PService {
     if (groupId != null && groupId.isNotEmpty) {
       MessageRouter.broadcastToGroup(groupId, message);
     } else {
-      print('消息缺少groupId字段或groupId为空，无法广播');
+      DebugLogger().info('消息缺少groupId字段或groupId为空，无法广播', tag: 'P2P');
     }
   }
 

@@ -5,6 +5,7 @@ import '../models/group.dart';
 import '../models/user.dart';
 import '../models/message.dart';
 import '../models/member.dart';
+import '../utils/debug_logger.dart';
 
 class StorageServiceHive {
   static bool _initialized = false;
@@ -24,12 +25,15 @@ class StorageServiceHive {
   /// 保存用户
   static Future<bool> saveUser(User user) async {
     try {
-      print('[Hive] 开始保存用户到Hive: id=${user.id}, deviceId=${user.deviceId}');
+      DebugLogger().info(
+        '[Hive] 开始保存用户到Hive: id=${user.id}, deviceId=${user.deviceId}',
+        tag: 'HIVE',
+      );
       await _userBox.put(user.deviceId, user.toJson());
-      print('[Hive] 用户保存到Hive成功');
+      DebugLogger().info('[Hive] 用户保存到Hive成功', tag: 'HIVE');
       return true;
     } catch (e) {
-      print('[Hive] 保存用户到Hive失败: $e');
+      DebugLogger().error('[Hive] 保存用户到Hive失败: $e', tag: 'HIVE');
       return false;
     }
   }
@@ -42,7 +46,7 @@ class StorageServiceHive {
       if (userJson == null) return null;
       return User.fromJson(jsonDecode(userJson));
     } catch (e) {
-      print('加载用户失败: $e');
+      DebugLogger().error('加载用户失败: $e', tag: 'HIVE');
       return null;
     }
   }
@@ -50,20 +54,23 @@ class StorageServiceHive {
   /// 根据设备ID加载用户
   static Future<User?> loadUserByDeviceId(String deviceId) async {
     try {
-      print('[Hive] 开始从Hive查找用户: deviceId=$deviceId');
+      DebugLogger().info('[Hive] 开始从Hive查找用户: deviceId=$deviceId', tag: 'HIVE');
       final userData = _userBox.get(deviceId);
-      print('[Hive] 从Hive获取的用户数据: $userData');
+      DebugLogger().info('[Hive] 从Hive获取的用户数据: $userData', tag: 'HIVE');
 
       if (userData != null) {
         final user = User.fromJson(Map<String, dynamic>.from(userData));
-        print('[Hive] 成功解析用户: id=${user.id}, name=${user.name}');
+        DebugLogger().info(
+          '[Hive] 成功解析用户: id=${user.id}, name=${user.name}',
+          tag: 'HIVE',
+        );
         return user;
       } else {
-        print('[Hive] 未找到用户数据');
+        DebugLogger().info('[Hive] 未找到用户数据', tag: 'HIVE');
         return null;
       }
     } catch (e) {
-      print('[Hive] 从Hive加载用户失败: $e');
+      DebugLogger().error('[Hive] 从Hive加载用户失败: $e', tag: 'HIVE');
       return null;
     }
   }
@@ -91,13 +98,13 @@ class StorageServiceHive {
   /// 删除指定群组
   static Future<bool> deleteGroup(String groupId) async {
     try {
-      print('[Hive] 开始删除群组: $groupId');
+      DebugLogger().info('[Hive] 开始删除群组: $groupId', tag: 'HIVE');
       await initialize();
       await _groupBox.delete(groupId);
-      print('[Hive] 群组删除成功: $groupId');
+      DebugLogger().info('[Hive] 群组删除成功: $groupId', tag: 'HIVE');
       return true;
     } catch (e) {
-      print('[Hive] 删除群组失败: $e');
+      DebugLogger().error('[Hive] 删除群组失败: $e', tag: 'HIVE');
       return false;
     }
   }
@@ -105,7 +112,7 @@ class StorageServiceHive {
   /// 删除指定群组的所有消息
   static Future<bool> deleteGroupMessages(String groupId) async {
     try {
-      print('[Hive] 开始删除群组消息: $groupId');
+      DebugLogger().info('[Hive] 开始删除群组消息: $groupId', tag: 'HIVE');
       await initialize();
 
       // 获取所有消息键
@@ -121,10 +128,13 @@ class StorageServiceHive {
         await _messageBox.delete(key);
       }
 
-      print('[Hive] 群组消息删除成功: $groupId (删除了 ${keysToDelete.length} 条消息)');
+      DebugLogger().info(
+        '[Hive] 群组消息删除成功: $groupId (删除了 ${keysToDelete.length} 条消息)',
+        tag: 'HIVE',
+      );
       return true;
     } catch (e) {
-      print('[Hive] 删除群组消息失败: $e');
+      DebugLogger().error('[Hive] 删除群组消息失败: $e', tag: 'HIVE');
       return false;
     }
   }
@@ -173,7 +183,7 @@ class StorageServiceHive {
           )
           .toList();
     } catch (e) {
-      print('搜索消息失败: $e');
+      DebugLogger().error('搜索消息失败: $e', tag: 'HIVE');
       return [];
     }
   }
@@ -184,10 +194,10 @@ class StorageServiceHive {
       await _userBox.clear();
       await _groupBox.clear();
       await _messageBox.clear();
-      print('已清空所有Hive数据');
+      DebugLogger().info('已清空所有Hive数据', tag: 'HIVE');
       return true;
     } catch (e) {
-      print('清空Hive数据失败: $e');
+      DebugLogger().error('清空Hive数据失败: $e', tag: 'HIVE');
       return false;
     }
   }
@@ -197,10 +207,10 @@ class StorageServiceHive {
     try {
       await _groupBox.clear();
       await _messageBox.clear();
-      print('已清空群组和消息数据，保留用户数据');
+      DebugLogger().info('已清空群组和消息数据，保留用户数据', tag: 'HIVE');
       return true;
     } catch (e) {
-      print('清空群组和消息数据失败: $e');
+      DebugLogger().error('清空群组和消息数据失败: $e', tag: 'HIVE');
       return false;
     }
   }

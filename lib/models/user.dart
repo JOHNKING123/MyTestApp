@@ -1,4 +1,5 @@
 import 'package:json_annotation/json_annotation.dart';
+import 'dart:convert';
 
 part 'user.g.dart';
 
@@ -27,7 +28,18 @@ class User {
   });
 
   factory User.fromJson(Map<String, dynamic> json) => _$UserFromJson(json);
-  Map<String, dynamic> toJson() => _$UserToJson(this);
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'profile': profile == null ? null : jsonEncode(profile.toJson()),
+      'createdAt': createdAt.toIso8601String(),
+      'status': status.toString().split('.').last,
+      'lastActiveAt': lastActiveAt.toIso8601String(),
+      'deviceId': deviceId,
+      'sessionTokens': jsonEncode(sessionTokens),
+    };
+  }
 
   String get publicKey => profile.publicKey;
   bool get isActive => status == UserStatus.active;

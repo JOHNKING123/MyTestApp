@@ -6,6 +6,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/group.dart';
 import '../models/user.dart';
 import '../models/member.dart';
+import '../services/encryption_service.dart';
+import '../utils/debug_logger.dart';
 
 class KeyManager {
   static const FlutterSecureStorage _storage = FlutterSecureStorage();
@@ -13,55 +15,77 @@ class KeyManager {
   static const String _sessionKeyPrefix = 'session_key_';
   static const String _userKeyPrefix = 'user_key_';
 
+  static final KeyManager _instance = KeyManager._internal();
+  factory KeyManager() => _instance;
+  KeyManager._internal();
+
   /// 生成群组密钥对
-  static Future<GroupKeyPair> generateGroupKeyPair() async {
+  Future<GroupKeyPair> generateGroupKeyPair() async {
     try {
       final random = Random.secure();
-
-      // 生成私钥（32字节）
       final privateKeyBytes = Uint8List.fromList(
         List<int>.generate(32, (_) => random.nextInt(256)),
       );
-
-      // 生成公钥（模拟，实际应该从私钥派生）
       final publicKeyBytes = Uint8List.fromList(
-        List<int>.generate(64, (_) => random.nextInt(256)),
+        List<int>.generate(32, (_) => random.nextInt(256)),
       );
 
       return GroupKeyPair(
-        publicKey: base64Encode(publicKeyBytes),
         privateKey: base64Encode(privateKeyBytes),
+        publicKey: base64Encode(publicKeyBytes),
         createdAt: DateTime.now(),
         algorithm: KeyAlgorithm.ecdsa,
       );
     } catch (e) {
-      throw KeyException('Failed to generate group key pair: $e');
+      DebugLogger().error(
+        'Failed to generate group key pair: $e',
+        tag: 'KEY_MANAGER',
+      );
+      rethrow;
     }
   }
 
   /// 生成用户密钥对
-  static Future<UserKeyPair> generateUserKeyPair() async {
+  Future<UserKeyPair> generateUserKeyPair() async {
     try {
       final random = Random.secure();
-
-      // 生成私钥（32字节）
       final privateKeyBytes = Uint8List.fromList(
         List<int>.generate(32, (_) => random.nextInt(256)),
       );
-
-      // 生成公钥（模拟，实际应该从私钥派生）
       final publicKeyBytes = Uint8List.fromList(
-        List<int>.generate(64, (_) => random.nextInt(256)),
+        List<int>.generate(32, (_) => random.nextInt(256)),
       );
 
       return UserKeyPair(
-        publicKey: base64Encode(publicKeyBytes),
         privateKey: base64Encode(privateKeyBytes),
+        publicKey: base64Encode(publicKeyBytes),
         createdAt: DateTime.now(),
         algorithm: KeyAlgorithm.ecdsa,
       );
     } catch (e) {
-      throw KeyException('Failed to generate user key pair: $e');
+      DebugLogger().error(
+        'Failed to generate user key pair: $e',
+        tag: 'KEY_MANAGER',
+      );
+      rethrow;
+    }
+  }
+
+  /// 生成群组密钥
+  Future<GroupKeyPair> generateGroupKeys() async {
+    try {
+      // 生成密钥对
+      final keyPair = await EncryptionService.generateKeyPair();
+
+      return GroupKeyPair(
+        publicKey: keyPair.publicKey,
+        privateKey: keyPair.privateKey,
+        createdAt: DateTime.now(),
+        algorithm: KeyAlgorithm.ecdsa,
+      );
+    } catch (e) {
+      DebugLogger().error('生成群组密钥失败: $e', tag: 'KEY_MANAGER');
+      rethrow;
     }
   }
 
@@ -80,37 +104,82 @@ class KeyManager {
     );
   }
 
-  /// 分发会话密钥
-  static Map<String, String> distributeSessionKey(
+  /// 为群组成员加密会话密钥
+  Future<Map<String, String>> encryptSessionKeyForMembers(
     SessionKey sessionKey,
     List<Member> members,
-  ) {
+  ) async {
     final encryptedKeys = <String, String>{};
 
     for (final member in members) {
       try {
-        // 简单的XOR加密（实际应该使用RSA）
-        final encrypted = _simpleEncrypt(sessionKey.key, member.publicKey);
-        encryptedKeys[member.id] = encrypted;
+        // 使用成员的公钥加密会话密钥
+        final encryptedKey = await EncryptionService.encryptWithPublicKey(
+          base64Decode(sessionKey.key),
+          member.publicKey,
+        );
+
+        encryptedKeys[member.userId] = base64Encode(encryptedKey);
       } catch (e) {
-        print('Failed to encrypt session key for member ${member.id}: $e');
+        DebugLogger().error(
+          'Failed to encrypt session key for member ${member.id}: $e',
+          tag: 'KEY_MANAGER',
+        );
+        // 继续处理其他成员
       }
     }
 
     return encryptedKeys;
   }
 
-  /// 简单加密（仅用于演示）
-  static String _simpleEncrypt(String data, String key) {
-    final dataBytes = utf8.encode(data);
-    final keyBytes = utf8.encode(key);
-    final encryptedBytes = Uint8List(dataBytes.length);
+  /// 解密会话密钥
+  Future<SessionKey?> decryptSessionKey(
+    String encryptedKey,
+    String privateKey,
+  ) async {
+    try {
+      final decryptedKey = await EncryptionService.decryptWithPrivateKey(
+        base64Decode(encryptedKey),
+        privateKey,
+      );
 
-    for (int i = 0; i < dataBytes.length; i++) {
-      encryptedBytes[i] = dataBytes[i] ^ keyBytes[i % keyBytes.length];
+      return SessionKey(
+        key: base64Encode(decryptedKey),
+        createdAt: DateTime.now(),
+        expiresAt: DateTime.now().add(const Duration(hours: 24)),
+        version: DateTime.now().millisecondsSinceEpoch,
+      );
+    } catch (e) {
+      DebugLogger().error('解密会话密钥失败: $e', tag: 'KEY_MANAGER');
+      return null;
     }
+  }
 
-    return base64Encode(encryptedBytes);
+  /// 轮换群组密钥
+  Future<GroupKeyPair> rotateGroupKeys(GroupKeyPair oldKeys) async {
+    try {
+      final newKeys = await generateGroupKeys();
+
+      // 这里可以添加密钥轮换的逻辑
+      // 比如保存旧密钥用于解密历史消息
+
+      return newKeys;
+    } catch (e) {
+      DebugLogger().error('轮换群组密钥失败: $e', tag: 'KEY_MANAGER');
+      rethrow;
+    }
+  }
+
+  /// 验证密钥是否过期
+  bool isKeyExpired(DateTime expiresAt) {
+    return DateTime.now().isAfter(expiresAt);
+  }
+
+  /// 生成密钥ID
+  String generateKeyId() {
+    final random = Random();
+    final bytes = List<int>.generate(16, (i) => random.nextInt(256));
+    return base64Encode(bytes);
   }
 
   /// 轮换会话密钥
@@ -127,11 +196,15 @@ class KeyManager {
   ) async {
     try {
       final key = '$_groupKeyPrefix$groupId';
-      final data = jsonEncode(keyPair.toJson());
-      await _storage.write(key: key, value: data);
+      final json = jsonEncode(keyPair.toJson());
+      await _storage.write(key: key, value: json);
       return true;
     } catch (e) {
-      throw KeyException('Failed to save group key pair: $e');
+      DebugLogger().error(
+        'Failed to save group key pair: $e',
+        tag: 'KEY_MANAGER',
+      );
+      rethrow;
     }
   }
 
@@ -145,7 +218,11 @@ class KeyManager {
       final json = jsonDecode(data);
       return GroupKeyPair.fromJson(json);
     } catch (e) {
-      throw KeyException('Failed to load group key pair: $e');
+      DebugLogger().error(
+        'Failed to load group key pair: $e',
+        tag: 'KEY_MANAGER',
+      );
+      rethrow;
     }
   }
 
@@ -160,7 +237,8 @@ class KeyManager {
       await _storage.write(key: key, value: data);
       return true;
     } catch (e) {
-      throw KeyException('Failed to save session key: $e');
+      DebugLogger().error('Failed to save session key: $e', tag: 'KEY_MANAGER');
+      rethrow;
     }
   }
 
@@ -174,7 +252,8 @@ class KeyManager {
       final json = jsonDecode(data);
       return SessionKey.fromJson(json);
     } catch (e) {
-      throw KeyException('Failed to load session key: $e');
+      DebugLogger().error('Failed to load session key: $e', tag: 'KEY_MANAGER');
+      rethrow;
     }
   }
 
@@ -185,11 +264,15 @@ class KeyManager {
   ) async {
     try {
       final key = '$_userKeyPrefix$userId';
-      final data = jsonEncode(keyPair.toJson());
-      await _storage.write(key: key, value: data);
+      final json = jsonEncode(keyPair.toJson());
+      await _storage.write(key: key, value: json);
       return true;
     } catch (e) {
-      throw KeyException('Failed to save user key pair: $e');
+      DebugLogger().error(
+        'Failed to save user key pair: $e',
+        tag: 'KEY_MANAGER',
+      );
+      rethrow;
     }
   }
 
@@ -203,7 +286,11 @@ class KeyManager {
       final json = jsonDecode(data);
       return UserKeyPair.fromJson(json);
     } catch (e) {
-      throw KeyException('Failed to load user key pair: $e');
+      DebugLogger().error(
+        'Failed to load user key pair: $e',
+        tag: 'KEY_MANAGER',
+      );
+      rethrow;
     }
   }
 
@@ -213,7 +300,8 @@ class KeyManager {
       await _storage.delete(key: keyId);
       return true;
     } catch (e) {
-      throw KeyException('Failed to destroy key: $e');
+      DebugLogger().error('Failed to destroy key: $e', tag: 'KEY_MANAGER');
+      rethrow;
     }
   }
 
@@ -236,6 +324,7 @@ class KeyManager {
   }
 }
 
+@JsonSerializable()
 class UserKeyPair {
   final String publicKey;
   final String privateKey;

@@ -2,8 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'screens/home_screen.dart';
 import 'providers/app_provider.dart';
+import 'utils/debug_logger.dart';
 
 void main() {
+  // 记录应用启动日志
+  DebugLogger().info('应用启动', tag: 'MAIN');
+
   runApp(const MyApp());
 }
 
@@ -12,6 +16,8 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    DebugLogger().info('构建应用界面', tag: 'MAIN');
+
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(
